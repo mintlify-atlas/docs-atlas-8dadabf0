@@ -1,0 +1,121 @@
+{
+  "projectType": "data-platform",
+  "projectName": "Prisma Engines",
+  "projectDescription": "Engine components that power Prisma ORM's core stack including query compilation, schema migrations, and introspection",
+  "theme": "aspen",
+  "primaryColor": "#5A67D8",
+  "lightColor": "#818CF8",
+  "darkColor": "#4C51BF",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "introduction",
+              "architecture",
+              "getting-started"
+            ]
+          },
+          {
+            "group": "Core Components",
+            "pages": [
+              "components/query-compiler",
+              "components/schema-engine",
+              "components/psl",
+              "components/prisma-fmt"
+            ]
+          },
+          {
+            "group": "Query Compiler",
+            "pages": [
+              "query-compiler/overview",
+              "query-compiler/driver-adapters",
+              "query-compiler/query-planning",
+              "query-compiler/wasm-build"
+            ]
+          },
+          {
+            "group": "Schema Engine",
+            "pages": [
+              "schema-engine/overview",
+              "schema-engine/migrations",
+              "schema-engine/introspection",
+              "schema-engine/diffing"
+            ]
+          },
+          {
+            "group": "Prisma Schema Language",
+            "pages": [
+              "psl/overview",
+              "psl/parser",
+              "psl/validation",
+              "psl/connectors"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/building",
+              "development/testing",
+              "development/debugging",
+              "development/contributing"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Libraries",
+            "pages": [
+              "api/query-compiler",
+              "api/query-structure",
+              "api/schema-core",
+              "api/psl-core"
+            ]
+          },
+          {
+            "group": "Binaries",
+            "pages": [
+              "api/schema-engine-cli",
+              "api/prisma-fmt"
+            ]
+          },
+          {
+            "group": "Connectors",
+            "pages": [
+              "api/connectors/overview",
+              "api/connectors/sql",
+              "api/connectors/mongodb"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Query compiler that generates optimized query plans for Prisma Client",
+    "Schema engine for database migrations and introspection",
+    "Prisma Schema Language (PSL) parser and validator",
+    "Driver adapters for executing queries through JavaScript database drivers",
+    "SQL query builder with support for PostgreSQL, MySQL, SQLite, SQL Server, and CockroachDB",
+    "LSP features and formatting via prisma-fmt",
+    "Comprehensive test suite with connector test kit"
+  ],
+  "publicApiSurface": [
+    "query-compiler (library): Query planning and compilation",
+    "query-structure (library): AST and type system for queries",
+    "schema-core (library): Migration and introspection core logic",
+    "psl-core (library): Prisma Schema Language parser and validator",
+    "schema-engine (binary): CLI for migrations and introspection",
+    "prisma-fmt (binary): Formatter and language server",
+    "query-compiler-wasm: WebAssembly build for query compiler",
+    "driver-adapters: TypeScript adapters for database drivers",
+    "sql-schema-describer: Database schema introspection",
+    "quaint: SQL connection and query abstraction"
+  ]
+}
