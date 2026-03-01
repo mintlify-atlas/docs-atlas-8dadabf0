@@ -1,0 +1,510 @@
+---
+title: "Debugging Prisma Engines"
+description: "Debugging techniques, tools, and logging for Prisma Engines development"
+---
+
+## Overview
+
+When debugging Prisma Engines, you have several tools and techniques at your disposal:
+
+- Language server support for code navigation
+- Debug macros and logging
+- Environment variable controls
+- Query graph visualization
+- Test runners with detailed output
+
+## General Debugging Techniques
+
+### Use the Language Server
+
+The Rust language server (rust-analyzer) is invaluable for:
+
+- **Go to definition** - Navigate to function/type definitions
+- **Find references** - Locate all usages of a symbol
+- **Type information** - Understand complex type hierarchies
+- **Inline errors** - See compilation errors in real-time
+
+### Debug Print Statements
+
+Use Rust's `dbg!()` macro to inspect variables and validate code paths:
+
+```rust
+let query_result = execute_query(query);
+dbg!(&query_result);
+
+// Validate code path
+dbg!("Reached this code path");
+
+// Inspect multiple values
+dbg!(var1, &var2, complex_expression());
+```
+
+The `dbg!()` macro:
+- Prints to stderr with file and line number
+- Returns the value, so it can be used inline
+- Pretty-prints the debug representation
+
+### Add Logging Statements
+
+Use the `tracing` or `log` crates for structured logging:
+
+```rust
+use tracing::{debug, info, warn, error};
+
+info!("Processing query: {}", query);
+debug!("Intermediate result: {:?}", result);
+warn!("Unexpected condition: {}", condition);
+error!("Failed to execute: {:?}", err);
+```
+
+## Logging Configuration
+
+### RUST_LOG Environment Variable
+
+Control logging levels and filters using `RUST_LOG`. See the [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for details.
+
+<CodeGroup>
+```bash Basic Levels
+# Show all info and above
+export RUST_LOG=info
+
+# Show all debug and above
+export RUST_LOG=debug
+
+# Show all trace logs (very verbose)
+export RUST_LOG=trace
+```
+
+```bash Module-specific
+# Debug logs from query_compiler only
+export RUST_LOG=query_compiler=debug
+
+# Multiple modules
+export RUST_LOG=query_compiler=debug,schema_engine=info
+
+# All except noisy module
+export RUST_LOG=debug,hyper=warn
+```
+
+```bash Complex Filters
+# Debug from specific path
+export RUST_LOG=query_compiler::planner=trace
+
+# Multiple paths with different levels
+export RUST_LOG=query_compiler=debug,sql_renderer=trace,hyper=warn
+```
+</CodeGroup>
+
+### Query Engine Specific Logging
+
+The `.envrc` file configures query engine logging:
+
+```bash
+# General logging
+export RUST_LOG_FORMAT=devel
+export RUST_LOG=info
+
+# Query engine specific
+export LOG_LEVEL=trace
+export QE_LOG_LEVEL=debug  # Set to "trace" for query-graph debugging
+
+# SQL formatting in logs
+export FMT_SQL=1
+```
+
+### Query Graph Visualization
+
+Enable query graph rendering to visualize query execution plans:
+
+<Steps>
+  <Step title="Install Graphviz">
+    ```bash
+    # macOS
+    brew install graphviz
+    
+    # Ubuntu/Debian
+    sudo apt-get install graphviz
+    
+    # Fedora/RHEL
+    sudo dnf install graphviz
+    ```
+  </Step>
+
+  <Step title="Enable Dot File Rendering">
+    ```bash
+    export PRISMA_RENDER_DOT_FILE=1
+    ```
+    
+    This creates `.dot` files for query graphs during execution.
+  </Step>
+
+  <Step title="Render to PNG (Optional)">
+    For query compiler tests:
+    
+    ```bash
+    export RENDER_DOT_TO_PNG=1
+    ```
+    
+    This automatically converts `.dot` files to PNG images.
+  </Step>
+</Steps>
+
+## Debugging Query Compiler
+
+### Query Compiler Playground
+
+Use the playground to generate and visualize query plans:
+
+```bash
+cargo run -p query-compiler-playground
+```
+
+This tool:
+- Compiles Prisma queries to execution plans
+- Generates query graphs
+- Outputs visualization files (when Graphviz is available)
+
+### Trace Query Compilation
+
+```bash
+export QE_LOG_LEVEL=trace
+export RUST_LOG=query_compiler=trace
+cargo test -p query-compiler -- --nocapture
+```
+
+### Profile Query Performance
+
+```bash
+make profile-qc
+```
+
+Or manually:
+
+```bash
+cargo run -p query-compiler --example profile_query --profile profiling
+```
+
+## Debugging Tests
+
+### Run Tests with Output
+
+By default, tests capture output. Use `--nocapture` to see logs:
+
+<CodeGroup>
+```bash Unit Tests
+cargo test -p prisma-fmt -- --nocapture
+```
+
+```bash Connector Tests
+cargo test -p query-engine-tests -- --nocapture
+make test-qe-verbose
+```
+
+```bash Single Test
+cargo test -p query-engine-tests --test query_engine_tests -- \
+  queries::filters::where_unique --exact --nocapture
+```
+</CodeGroup>
+
+### Test-specific Logging
+
+Combine `RUST_LOG` with test execution:
+
+```bash
+RUST_LOG=debug cargo test -p schema-engine -- --nocapture
+RUST_LOG=trace,hyper=warn cargo test -p query-engine-tests -- --nocapture
+```
+
+### Single-threaded Test Execution
+
+Run tests sequentially to avoid interleaved output:
+
+```bash
+cargo test -p query-engine-tests -- --test-threads 1 --nocapture
+make test-qe-verbose-st
+```
+
+### Debug Specific Relation Test
+
+```bash
+export RELATION_TEST_IDX=5
+cargo test -p query-engine-tests -- --nocapture
+```
+
+## Debugging Schema Engine
+
+### Migration Debugging
+
+Enable detailed migration logs:
+
+```bash
+export RUST_LOG=schema_engine=trace,sql_schema_describer=debug
+source .test_database_urls/postgres
+cargo test -p sql-migration-tests -- --nocapture
+```
+
+### Introspection Debugging
+
+```bash
+export RUST_LOG=sql_introspection_connector=trace
+cargo test -p sql-introspection-tests -- --nocapture
+```
+
+## Debugging Driver Adapters
+
+### Enable Driver Adapter Logging
+
+```bash
+export RUST_LOG=debug
+export QE_LOG_LEVEL=trace
+export DRIVER_ADAPTER=pg
+make test-pg-qc
+```
+
+### Debug Adapter Configuration
+
+Print adapter configuration:
+
+```bash
+export DRIVER_ADAPTER_CONFIG='{"proxyUrl":"127.0.0.1:5488/v1"}'
+echo $DRIVER_ADAPTER_CONFIG | jq .
+```
+
+### Inspect Test Executor
+
+Run the test executor directly:
+
+```bash
+./libs/driver-adapters/executor/script/testd-qc.sh
+```
+
+## Debugging Build Issues
+
+### Verbose Cargo Build
+
+```bash
+cargo build -vv
+```
+
+### Check Dependencies
+
+```bash
+# Show dependency tree
+cargo tree
+
+# Check for duplicate dependencies
+cargo tree --duplicates
+
+# Show why a package is included
+cargo tree -i <package-name>
+```
+
+### Clean and Rebuild
+
+```bash
+make clean
+cargo build
+```
+
+### Check Feature Flags
+
+```bash
+# Build with all features
+cargo build --all-features
+
+# Build with specific features
+cargo build -p psl --features all
+```
+
+## Debugging Wasm Builds
+
+### Wasm Build Logs
+
+```bash
+# Query compiler Wasm
+cd query-compiler/query-compiler-wasm
+./build.sh 0.0.0 query-compiler/query-compiler-wasm/pkg fast
+
+# Schema engine Wasm
+cd schema-engine/schema-engine-wasm
+./build.sh 0.0.0 schema-engine/schema-engine-wasm/pkg
+```
+
+### Verify Wasm Output
+
+```bash
+# Check Wasm file size
+ls -lh query-compiler/query-compiler-wasm/pkg/*/query_compiler_*_bg.wasm
+
+# Inspect with wasm-objdump (if wasm-tools installed)
+wasm-objdump -h query-compiler/query-compiler-wasm/pkg/postgresql/query_compiler_fast_bg.wasm
+```
+
+## Common Debugging Scenarios
+
+### Investigating Test Failures
+
+<Steps>
+  <Step title="Run failing test with logs">
+    ```bash
+    RUST_LOG=debug cargo test -p query-engine-tests -- \
+      failing_test_name --exact --nocapture
+    ```
+  </Step>
+
+  <Step title="Check snapshot differences">
+    ```bash
+    cargo insta review
+    ```
+  </Step>
+
+  <Step title="Inspect test database">
+    ```bash
+    # Connect to test database
+    psql $TEST_DATABASE_URL
+    
+    # List test databases
+    psql -l | grep some_spec
+    ```
+  </Step>
+</Steps>
+
+### Tracing Query Execution
+
+```bash
+export QE_LOG_LEVEL=trace
+export RUST_LOG=query_compiler=trace,sql_renderer=trace
+export FMT_SQL=1
+export PRISMA_RENDER_DOT_FILE=1
+
+cargo test -p query-engine-tests -- my_query_test --exact --nocapture
+```
+
+### Debugging Connection Issues
+
+```bash
+# Test database connectivity
+psql $TEST_DATABASE_URL -c "SELECT 1;"
+
+# Check Docker containers
+docker ps | grep postgres
+
+# View container logs
+docker logs <container-name>
+
+# Restart database
+make all-dbs-down
+make all-dbs-up
+```
+
+### Debugging Type Errors
+
+Use `cargo check` for faster feedback:
+
+```bash
+cargo check
+
+# With all features
+cargo check --all-features
+
+# Specific package
+cargo check -p query-compiler
+```
+
+## Performance Debugging
+
+### Profiling with perf (Linux)
+
+```bash
+# Build with profiling info
+cargo build --profile profiling -p query-compiler
+
+# Record performance
+perf record target/profiling/query-compiler-playground
+
+# View report
+perf report
+```
+
+### Flamegraph Generation
+
+```bash
+cargo install flamegraph
+
+# Generate flamegraph
+cargo flamegraph -p query-compiler --example profile_query
+```
+
+### Memory Debugging with Valgrind
+
+```bash
+cargo build
+valgrind --leak-check=full target/debug/schema-engine
+```
+
+## IDE Integration
+
+### Visual Studio Code
+
+**Recommended extensions:**
+- rust-analyzer
+- CodeLLDB (for debugging)
+- Error Lens (inline errors)
+
+**Debug configuration** (`.vscode/launch.json`):
+
+```json
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "Debug unit tests",
+      "cargo": {
+        "args": [
+          "test",
+          "--no-run",
+          "--package=query-compiler"
+        ]
+      },
+      "args": [],
+      "cwd": "${workspaceFolder}"
+    }
+  ]
+}
+```
+
+### Rust-analyzer Settings
+
+Prevent build lock conflicts:
+
+```json settings.json
+{
+  "rust-analyzer.checkOnSave.extraArgs": [
+    "--target-dir=/tmp/rust-analyzer-check"
+  ]
+}
+```
+
+## Useful Environment Variables Reference
+
+| Variable                    | Purpose                                          |
+| --------------------------- | ------------------------------------------------ |
+| `RUST_LOG`                  | Control log levels and filters                   |
+| `RUST_LOG_FORMAT`           | Log format (devel, json)                         |
+| `QE_LOG_LEVEL`              | Query engine log level                           |
+| `LOG_LEVEL`                 | General log level                                |
+| `FMT_SQL`                   | Format SQL in logs (set to 1)                    |
+| `PRISMA_RENDER_DOT_FILE`    | Render query graphs to .dot files                |
+| `RENDER_DOT_TO_PNG`         | Convert .dot files to PNG (requires Graphviz)    |
+| `RUST_BACKTRACE`            | Show backtrace on panic (1 or full)              |
+| `UPDATE_EXPECT`             | Update expect! snapshots (set to 1)              |
+| `SIMPLE_TEST_MODE`          | Reduce relation test count                       |
+| `RELATION_TEST_IDX`         | Run specific relation test                       |
+
+## Next Steps
+
+- Review [contribution guidelines](/development/contributing)
+- Learn about [building](/development/building) the engines
+- Explore [testing](/development/testing) strategies

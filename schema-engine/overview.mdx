@@ -1,0 +1,183 @@
+---
+title: Schema Engine Overview
+description: Architecture and core concepts of the Prisma Schema Engine
+---
+
+The Schema Engine is the core component behind [Prisma Migrate](https://www.prisma.io/docs/concepts/components/prisma-migrate), responsible for managing database schemas, generating migrations, and performing introspection across all supported databases.
+
+## Architecture
+
+The Schema Engine follows a **Core/Connector** architecture that enables consistent behavior across different database systems.
+
+### Core Layer
+
+The `schema-core` crate (located in `schema-engine/core`) provides the high-level API exposed to all consumers. It's a thin orchestration layer that:
+
+- Defines the unified API surface
+- Routes operations to appropriate connectors
+- Handles cross-connector concerns
+- Manages the JSON-RPC interface
+
+### Connector Layer
+
+Each supported database has a dedicated connector implementing the `SchemaConnector` trait defined in the `schema-connector` crate. Most of the actual migration and introspection logic lives in these connectors:
+
+- **SQL Schema Connector** - PostgreSQL, MySQL, SQL Server, SQLite, CockroachDB
+- **MongoDB Schema Connector** - MongoDB (limited support in Prisma 7)
+
+Connectors are currently built-in and live in `schema-engine/connectors/`.
+
+<Note>
+All connectors implement the same API, ensuring consistent behavior regardless of the underlying database system.
+</Note>
+
+## Communication Interfaces
+
+The Schema Engine can be invoked in two ways:
+
+### 1. JSON-RPC API (Primary)
+
+The default mode when running the `schema-engine` binary. The TypeScript CLI communicates with the engine over stdio using JSON-RPC, allowing:
+
+- Multiple commands on the same connection
+- Bidirectional communication
+- State management across operations
+- Real-time result streaming
+
+```bash
+# Start JSON-RPC server
+schema-engine --datasource '{"url": "..."}'
+```
+
+See [Schema Engine CLI](/api/schema-engine-cli) for the complete list of available methods and commands.
+
+### 2. CLI Commands (Legacy)
+
+Direct CLI commands for operations that don't require a database connection:
+
+```bash
+schema-engine cli create-database
+schema-engine cli drop-database
+schema-engine cli can-connect-to-database
+```
+
+<Warning>
+The CLI subcommand interface is legacy. The JSON-RPC API now connects lazily, eliminating most use cases for direct CLI commands.
+</Warning>
+
+## Core Functionality
+
+The Schema Engine provides two main blocks of functionality:
+
+### 1. Traditional Migrations System
+
+Like ActiveRecord migrations or Flyway, it manages migration files and tracks application state:
+
+- Creates and applies migration files (plain SQL on SQL databases)
+- Tracks migration history in the `_prisma_migrations` table
+- Detects failed migrations and drift
+- Supports migration resolution with `migrate resolve`
+
+### 2. Schema Diffing & Generation
+
+Like tools such as skeema, it understands database schemas and can generate migrations:
+
+- Compares Prisma schema (state A) with database schema (state B)
+- Generates migration to transform B → A
+- Powers `migrate dev` workflow
+- Enables schema introspection from existing databases
+
+<Accordion title="How diffing works">
+**Diffing** is the process of generating a migration between two schemas. The Schema Engine:
+
+1. Loads both the "from" schema and "to" schema
+2. Uses connector-specific logic to compare structures
+3. Generates DDL statements to transform one into the other
+4. Detects potentially destructive changes (data loss warnings)
+5. Renders the migration as SQL or a summary
+
+The diffing algorithm is database-specific and lives in each connector.
+</Accordion>
+
+## Logging and Diagnostics
+
+The Schema Engine outputs structured JSON logs to stderr. Each line contains:
+
+```typescript
+interface StdErrLine {
+  timestamp: string;
+  level: LogLevel;  // "INFO" | "ERROR" | "DEBUG" | "WARN"
+  fields: LogFields;
+}
+
+interface LogFields {
+  message: string;
+  
+  // Only for ERROR level messages
+  is_panic?: boolean;
+  error_code?: string;
+  
+  [key: string]: any;
+}
+```
+
+### Exit Codes
+
+| Code | Meaning |
+|------|----------|
+| `0` | Normal exit |
+| `1` | Abnormal (error) exit |
+| `101` | Panic (unrecoverable error) |
+
+<Note>
+All non-zero exit codes are accompanied by an ERROR-level log message on stderr.
+</Note>
+
+## Data Sources and Connection
+
+In **Prisma 7**, datasource URLs are no longer embedded in the Prisma schema. Instead:
+
+- The `--datasource` CLI flag accepts a JSON payload with connection strings
+- The Prisma Config file (`prisma.config.ts`) supplies URLs at runtime
+- Schema Engine receives URLs as overrides, bypassing PSL parsing
+
+```bash
+schema-engine --datasource '{"url": "postgresql://...", "shadowDatabaseUrl": "postgresql://..."}'
+```
+
+<Warning>
+The `directUrl` and `shadowDatabaseUrl` properties are **invalid** in the Prisma Schema Language (PSL) as of Prisma 7. These must be supplied via CLI overrides or the Prisma Config file.
+</Warning>
+
+## Directory Structure
+
+```
+schema-engine/
+├── cli/                    # Binary entry point and CLI commands
+├── core/                   # Core orchestration logic
+├── commands/               # Command implementations
+├── connectors/
+│   ├── schema-connector/   # Connector trait definitions
+│   ├── sql-schema-connector/
+│   └── mongodb-schema-connector/
+├── json-rpc-api/           # JSON-RPC type definitions
+├── sql-migration-tests/    # Integration tests (requires DBs)
+└── sql-introspection-tests/
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Migration System" icon="database" href="/schema-engine/migrations">
+    Deep dive into the _prisma_migrations table and migration tracking
+  </Card>
+  <Card title="Introspection" icon="magnifying-glass" href="/schema-engine/introspection">
+    Learn how database introspection works
+  </Card>
+  <Card title="Schema Diffing" icon="code-compare" href="/schema-engine/diffing">
+    Understand migration generation and schema comparison
+  </Card>
+  <Card title="CLI Reference" icon="terminal" href="/api/schema-engine-cli">
+    Complete CLI and JSON-RPC API reference
+  </Card>
+</CardGroup>

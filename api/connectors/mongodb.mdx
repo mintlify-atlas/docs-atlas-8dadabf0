@@ -1,0 +1,476 @@
+---
+title: 'MongoDB Connector'
+description: 'MongoDB schema connector implementation and capabilities'
+---
+
+## Overview
+
+The MongoDB schema connector provides migration and introspection support for MongoDB databases. It follows the same `SchemaConnector` abstraction as SQL connectors but with MongoDB-specific implementation details.
+
+Location: `schema-engine/connectors/mongodb-schema-connector/`
+
+<Note>
+  **Query Compiler Status**: MongoDB support in the Query Compiler (QC) is not yet implemented. Prisma 7 ships without MongoDB support initially; it will be added once a driver adapter implementation is available.
+</Note>
+
+## Architecture
+
+### MongoDbSchemaConnector
+
+```rust
+pub struct MongoDbSchemaConnector {
+    connection_string: String,
+    client: OnceCell<Client>,
+    preview_features: BitFlags<PreviewFeature>,
+    host: Arc<dyn ConnectorHost>,
+}
+```
+
+Key characteristics:
+- Lazy connection initialization via `OnceCell`
+- No connection pooling (MongoDB driver handles internally)
+- Supports preview features for experimental functionality
+
+### MongoDbSchemaDialect
+
+```rust
+pub struct MongoDbSchemaDialect;
+
+impl SchemaDialect for MongoDbSchemaDialect {
+    fn diff(&self, from: DatabaseSchema, to: DatabaseSchema) -> Migration;
+    fn migration_len(&self, migration: &Migration) -> usize;
+    fn migration_summary(&self, migration: &Migration) -> String;
+    // ...
+}
+```
+
+## Supported MongoDB Versions
+
+**Provider**: `mongodb`
+
+**Supported Versions**: MongoDB 4.0+, MongoDB 5.0+, MongoDB 6.0+
+
+**Deployment Types**:
+- Standalone servers
+- Replica sets (recommended for transactions)
+- Sharded clusters
+- MongoDB Atlas
+
+## Connection String Format
+
+MongoDB uses the standard MongoDB connection URI:
+
+```
+mongodb://[username:password@]host1[:port1][,...hostN[:portN]][/[database][?options]]
+mongodb+srv://[username:password@]host[/[database][?options]]
+```
+
+### Examples
+
+<Tabs>
+  <Tab title="Standard">
+    ```
+    mongodb://localhost:27017/myapp
+    mongodb://user:password@localhost:27017/myapp
+    mongodb://localhost:27017,localhost:27018/myapp?replicaSet=rs0
+    ```
+  </Tab>
+  <Tab title="MongoDB Atlas">
+    ```
+    mongodb+srv://username:password@cluster0.example.mongodb.net/myapp
+    mongodb+srv://username:password@cluster0.example.mongodb.net/myapp?retryWrites=true&w=majority
+    ```
+  </Tab>
+  <Tab title="With Options">
+    ```
+    mongodb://localhost:27017/myapp?authSource=admin
+    mongodb://localhost:27017/myapp?maxPoolSize=50&w=majority
+    mongodb://localhost:27017/myapp?readPreference=secondary
+    ```
+  </Tab>
+</Tabs>
+
+### Connection Parameters
+
+- `authSource`: Authentication database (default: database in URI)
+- `replicaSet`: Replica set name
+- `ssl` / `tls`: Enable TLS/SSL
+- `retryWrites`: Enable retryable writes
+- `w`: Write concern (e.g., `majority`)
+- `maxPoolSize`: Maximum connection pool size
+- `minPoolSize`: Minimum connection pool size
+- `maxIdleTimeMS`: Max time connections can remain idle
+- `serverSelectionTimeoutMS`: Server selection timeout
+- `readPreference`: Read preference (`primary`, `secondary`, etc.)
+
+## Capabilities
+
+MongoDB connector capabilities:
+
+- **Document model**: Store data as BSON documents
+- **Embedded documents**: Nested composite types
+- **Arrays**: Native array support for all types
+- **Transactions**: Multi-document ACID transactions (replica sets/sharded clusters)
+- **Flexible schema**: Schema validation at application level
+- **Indexes**: Single field, compound, multikey, text, geospatial
+
+**Limitations**:
+- No native enums (stored as strings)
+- No JOIN operations (handled via application-level aggregation)
+- No foreign key constraints (referential integrity at application level)
+- No migration scripts (schema is application-defined)
+
+## MongoDB-Specific Features
+
+### Composite Types
+
+MongoDB excels at embedded documents:
+
+```prisma
+type Address {
+  street String
+  city   String
+  zip    String
+}
+
+model User {
+  id      String  @id @default(auto()) @map("_id") @db.ObjectId
+  name    String
+  address Address
+}
+```
+
+Stored as:
+```json
+{
+  "_id": ObjectId("..."),
+  "name": "John Doe",
+  "address": {
+    "street": "123 Main St",
+    "city": "Springfield",
+    "zip": "12345"
+  }
+}
+```
+
+### Arrays
+
+Native array support for primitives and composite types:
+
+```prisma
+model Post {
+  id      String   @id @default(auto()) @map("_id") @db.ObjectId
+  title   String
+  tags    String[]
+  authors User[]
+}
+```
+
+### ObjectId
+
+MongoDB's native identifier type:
+
+```prisma
+model User {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+}
+```
+
+The `@db.ObjectId` attribute maps to MongoDB's 12-byte BSON ObjectId.
+
+## Schema Operations
+
+### Database Lifecycle
+
+**Create Database**:
+```rust
+connector.create_database().await?;
+```
+
+MongoDB creates databases lazily on first write:
+```rust
+tracing::warn!("MongoDB database will be created on first use.");
+```
+
+**Drop Database**:
+```rust
+connector.drop_database().await?;
+```
+
+Drops the entire database and all collections.
+
+**Reset**:
+```rust
+connector.reset(soft, namespaces, filter).await?;
+```
+
+For MongoDB, reset always drops the database (soft reset not supported).
+
+### Migration
+
+MongoDB migrations differ from SQL:
+
+```rust
+connector.apply_migration(&migration).await?;
+```
+
+**Migration Steps**:
+- `CreateCollection`: Create new collection
+- `DropCollection`: Drop collection
+- `CreateIndex`: Create index on collection
+- `DropIndex`: Drop index
+- `UpdateValidator`: Update schema validation rules
+
+**No SQL Scripts**:
+```rust
+fn render_script(&self, _migration: &Migration) -> ConnectorResult<String> {
+    Err(ConnectorError::from_msg(
+        "Rendering to a script is not supported on MongoDB."
+    ))
+}
+```
+
+MongoDB migrations are applied directly via the driver; there's no SQL-like script format.
+
+### Introspection
+
+MongoDB introspection uses sampling to infer schema:
+
+```rust
+let result = connector.introspect(&ctx, extension_types).await?;
+```
+
+**Sampling Process**:
+1. **Describe collections**: List all collections in database
+2. **Sample documents**: Read sample documents from each collection
+3. **Infer schema**: Analyze document structure to determine field types
+4. **Detect composite types**: Identify embedded documents
+5. **Find indexes**: Read index definitions
+6. **Generate model**: Create Prisma schema from inferred structure
+
+Implementation:
+```rust
+let schema = client.describe().await?;
+sampler::sample(client.database(), schema, ctx).await
+```
+
+**Challenges**:
+- **Schema inference**: MongoDB is schemaless; inference based on samples may not capture all variations
+- **Type ambiguity**: BSON type mapping to Prisma types requires heuristics
+- **Optional fields**: Determining which fields are optional requires statistical analysis
+
+## Migration Persistence
+
+MongoDB stores migration records in a collection (equivalent to SQL `_prisma_migrations` table):
+
+```rust
+impl MigrationPersistence for MongoDbSchemaConnector {
+    // Migration tracking implementation
+}
+```
+
+The collection stores:
+- Migration ID
+- Migration name
+- Checksum
+- Applied timestamp
+- Status
+
+## Transient Errors
+
+MongoDB has specific retry logic for transient errors:
+
+```rust
+fn should_retry_on_transient_error(&self) -> bool {
+    true
+}
+```
+
+Transient errors occur due to:
+- Replica set elections
+- Network hiccups
+- Lock contention
+
+Prisma automatically retries transactions when these occur.
+
+## Destructive Change Checking
+
+MongoDB destructive change checker warns about:
+
+```rust
+impl DestructiveChangeChecker for MongoDbSchemaConnector {
+    // Check for destructive changes
+}
+```
+
+Warnings:
+- Dropping collections (data loss)
+- Dropping indexes (performance impact)
+- Changing field types (potential data loss)
+- Adding required fields to existing documents
+
+## Limitations
+
+### Unsupported Commands
+
+Some schema engine commands are not supported:
+
+```rust
+fn apply_script(&mut self, _migration_name: &str, _script: &str) -> BoxFuture<'_, ConnectorResult<()>> {
+    Box::pin(future::ready(Err(unsupported_command_error())))
+}
+
+fn db_execute(&mut self, _script: String) -> BoxFuture<'_, ConnectorResult<()>> {
+    Box::pin(future::ready(Err(ConnectorError::from_msg(
+        "dbExecute is not supported on MongoDB"
+    ))))
+}
+```
+
+These return:
+```
+The "mongodb" provider is not supported with this command.
+For more info see https://www.prisma.io/docs/concepts/database-connectors/mongodb
+```
+
+### Schema Validation
+
+MongoDB supports JSON schema validation at the database level:
+
+```javascript
+db.createCollection("users", {
+  validator: {
+    $jsonSchema: {
+      bsonType: "object",
+      required: ["name", "email"],
+      properties: {
+        name: { bsonType: "string" },
+        email: { bsonType: "string" }
+      }
+    }
+  }
+})
+```
+
+Prisma can update validators during migrations but does not generate them from schema by default.
+
+## Relations in MongoDB
+
+MongoDB handles relations differently than SQL:
+
+### Embedded Relations
+
+One-to-many via embedded arrays:
+
+```prisma
+model User {
+  id    String @id @default(auto()) @map("_id") @db.ObjectId
+  posts Post[]
+}
+
+type Post {
+  title String
+  body  String
+}
+```
+
+### Referenced Relations
+
+One-to-many via references:
+
+```prisma
+model User {
+  id    String @id @default(auto()) @map("_id") @db.ObjectId
+  posts Post[]
+}
+
+model Post {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  userId   String @db.ObjectId
+  user     User   @relation(fields: [userId], references: [id])
+}
+```
+
+### Many-to-Many
+
+Stored as arrays of IDs:
+
+```prisma
+model Post {
+  id         String   @id @default(auto()) @map("_id") @db.ObjectId
+  categoryIds String[] @db.ObjectId
+  categories Category[] @relation(fields: [categoryIds], references: [id])
+}
+
+model Category {
+  id    String @id @default(auto()) @map("_id") @db.ObjectId
+  posts Post[]
+}
+```
+
+## Native Types
+
+MongoDB BSON types mapped in Prisma:
+
+| Prisma Type | MongoDB Type | Annotation |
+|-------------|--------------|------------|
+| String | String | `@db.String` |
+| Int | Int32 | `@db.Int` |
+| BigInt | Int64 | `@db.Long` |
+| Float | Double | `@db.Double` |
+| Decimal | Decimal128 | `@db.Decimal` |
+| Boolean | Bool | `@db.Bool` |
+| DateTime | Date | `@db.Date` / `@db.Timestamp` |
+| Bytes | BinData | `@db.BinData` |
+| Json | Object/Array | `@db.Object` / `@db.Array` |
+| String (ID) | ObjectId | `@db.ObjectId` |
+
+## Client Wrapper
+
+The MongoDB connector uses a client wrapper (`client_wrapper.rs`):
+
+```rust
+pub struct Client {
+    client: mongodb::Client,
+    database_name: String,
+    preview_features: BitFlags<PreviewFeature>,
+}
+
+impl Client {
+    pub async fn connect(connection_string: &str, preview_features: BitFlags<PreviewFeature>) -> ConnectorResult<Self>;
+    pub async fn describe(&self) -> ConnectorResult<MongoSchema>;
+    pub fn database(&self) -> mongodb::Database;
+    pub fn db_name(&self) -> &str;
+    pub async fn drop_database(&self) -> ConnectorResult<()>;
+}
+```
+
+Error conversion:
+```rust
+pub fn mongo_error_to_connector_error(error: mongodb::error::Error) -> ConnectorError {
+    ConnectorError::from_msg(error.to_string())
+}
+```
+
+## Future: Query Compiler Support
+
+Planned MongoDB Query Compiler implementation will require:
+
+1. **Driver adapter**: JavaScript/TypeScript adapter for MongoDB Node.js driver
+2. **Query translation**: Prisma query AST to MongoDB aggregation pipeline
+3. **Type mapping**: Prisma types to BSON types
+4. **Relation resolution**: Application-level joins via aggregation `$lookup`
+5. **Transaction support**: Multi-document transactions on replica sets
+
+Until then, MongoDB uses the legacy connector architecture.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Connector Overview" icon="sitemap" href="/api/connectors/overview">
+    Return to connector architecture overview
+  </Card>
+  <Card title="SQL Connectors" icon="database" href="/api/connectors/sql">
+    Explore SQL connector implementation
+  </Card>
+</CardGroup>

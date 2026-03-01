@@ -1,0 +1,315 @@
+---
+title: Migration System
+description: How Prisma Schema Engine tracks and applies migrations
+---
+
+The Schema Engine implements a traditional migrations system similar to ActiveRecord migrations or Flyway. It manages plain SQL migration files and tracks their application state using the `_prisma_migrations` table.
+
+## The _prisma_migrations Table
+
+Every database managed by Prisma Migrate contains a migrations table that serves the same purpose as migration tables in nearly all migration tools. The terminology is SQL-specific because migrations tables are only used with SQL connectors.
+
+<Note>
+Prisma's migrations table is more extensive than typical migration tools, tracking additional metadata like checksums, logs, and rollback state.
+</Note>
+
+### Table Schema
+
+The table schema is identical across all SQL databases (with minor dialect differences):
+
+<CodeGroup>
+
+```sql PostgreSQL
+CREATE TABLE _prisma_migrations (
+    id                      VARCHAR(36) PRIMARY KEY NOT NULL,
+    checksum                VARCHAR(64) NOT NULL,
+    finished_at             TIMESTAMPTZ,
+    migration_name          VARCHAR(255) NOT NULL,
+    logs                    TEXT,
+    rolled_back_at          TIMESTAMPTZ,
+    started_at              TIMESTAMPTZ NOT NULL DEFAULT now(),
+    applied_steps_count     INTEGER NOT NULL DEFAULT 0
+);
+```
+
+```sql MySQL
+CREATE TABLE _prisma_migrations (
+    id                      VARCHAR(36) PRIMARY KEY NOT NULL,
+    checksum                VARCHAR(64) NOT NULL,
+    finished_at             DATETIME(3),
+    migration_name          VARCHAR(255) NOT NULL,
+    logs                    TEXT,
+    rolled_back_at          DATETIME(3),
+    started_at              DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    applied_steps_count     INTEGER UNSIGNED NOT NULL DEFAULT 0
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+```
+
+```sql SQL Server
+CREATE TABLE [schema].[_prisma_migrations] (
+    id                      VARCHAR(36) PRIMARY KEY NOT NULL,
+    checksum                VARCHAR(64) NOT NULL,
+    finished_at             DATETIMEOFFSET,
+    migration_name          NVARCHAR(250) NOT NULL,
+    logs                    NVARCHAR(MAX) NULL,
+    rolled_back_at          DATETIMEOFFSET,
+    started_at              DATETIMEOFFSET NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    applied_steps_count     INT NOT NULL DEFAULT 0
+);
+```
+
+</CodeGroup>
+
+### Column Descriptions
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `id` | VARCHAR(36) | Random unique identifier (v4 UUID). Never changes once written. |
+| `checksum` | VARCHAR(64) | SHA-256 checksum of the migration file. Used to detect modifications. Never overwritten. |
+| `finished_at` | TIMESTAMP | Completion timestamp. **Only set for successful migrations.** NULL means incomplete. |
+| `migration_name` | VARCHAR(255) | Complete name of the migration directory (without path prefix). |
+| `logs` | TEXT | Error messages recorded if the migration fails. |
+| `rolled_back_at` | TIMESTAMP | Set by `prisma migrate resolve --rolled-back`. Causes the row to be ignored. |
+| `started_at` | TIMESTAMP | Row creation timestamp, written **before** applying the migration. |
+| `applied_steps_count` | INTEGER | **Deprecated.** Should not be used. |
+
+<Warning>
+The `applied_steps_count` column is deprecated and should be considered legacy. Do not rely on it.
+</Warning>
+
+## Migration States
+
+A migration row can be in one of several states based on column values:
+
+### Successful Migration
+```
+finished_at IS NOT NULL
+rolled_back_at IS NULL
+```
+Migration completed successfully and is active.
+
+### Failed Migration
+```
+finished_at IS NULL
+rolled_back_at IS NULL
+logs IS NOT NULL
+```
+Migration started but failed. Must be resolved before continuing.
+
+### Rolled Back
+```
+rolled_back_at IS NOT NULL
+```
+Marked as rolled back via `migrate resolve`. Ignored during deployment.
+
+### Pending (not in table)
+```
+No row exists for the migration
+```
+Migration file exists on disk but hasn't been applied yet.
+
+## Migration Lifecycle
+
+### During `prisma migrate deploy`
+
+`migrate deploy` is the command for **unattended migrations** (CI/CD). It exclusively:
+
+1. Reads the migrations directory on disk
+2. Queries `_prisma_migrations` to determine applied migrations
+3. Checks for failed migrations (started but not finished)
+4. Applies pending migrations in chronological order
+
+<Accordion title="Deploy algorithm in detail">
+
+For each migration in the migrations directory:
+
+**If row exists in migrations table:**
+- `rolled_back_at IS NOT NULL` → Skip (ignored)
+- `finished_at IS NOT NULL` → Skip (already applied)
+- `finished_at IS NULL AND rolled_back_at IS NULL` → **ERROR: Failed migration must be resolved**
+
+**If no row exists:**
+1. Insert row with `id`, `migration_name`, `checksum`, and `started_at`
+2. Execute the migration SQL
+3. **On success:** Set `finished_at` to current timestamp
+4. **On error:** Do nothing (started without finished = error state)
+
+</Accordion>
+
+<Note>
+`migrate deploy` will **never** reset your database and **never** uses a shadow database. It's designed for production reliability.
+</Note>
+
+### During `prisma migrate resolve`
+
+Resolves failed or stuck migrations:
+
+**With `--applied <migration>`:**
+1. Marks the existing row as rolled back (`rolled_back_at = now()`)
+2. Creates a **new row** with `finished_at = started_at`
+
+This preserves the historical record while marking the migration as complete.
+
+**With `--rolled-back <migration>`:**
+1. Sets `rolled_back_at = now()` on the existing row
+2. Future deployments will ignore this migration
+
+<Warning>
+`migrate resolve` doesn't actually run or roll back SQL. It only updates the tracking table. You must manually fix the database state before resolving.
+</Warning>
+
+### During `prisma migrate dev`
+
+The development workflow is more strict:
+
+- Detects drift between migrations and actual database schema
+- Checks for modified migrations (via checksum comparison)
+- Checks for missing migrations (in table but not on disk)
+- Offers to reset the database when inconsistencies are detected
+
+<Accordion title="Why does migrate dev want to reset?">
+
+The dev workflow is pedantic because:
+
+1. Migrations can contain arbitrary SQL (views, triggers, check constraints)
+2. These features might not be representable in Prisma schema
+3. The only way to guarantee the database matches migrations is to reset and reapply
+4. Common causes: branch switching, editing migrations, merge conflicts
+
+Migrate could use `db push` to match your schema, but that would lose custom SQL features the engines don't understand.
+
+</Accordion>
+
+## Why No Down Migrations?
+
+Prisma Migrate intentionally does not support automatic down/rollback migrations. Here's why:
+
+### In Development
+
+Down migrations are typically used to:
+- Iterate on a migration (down → edit → up)
+- Switch branches and undo changes
+
+**Prisma's solution:** `migrate dev` detects discrepancies and offers to reset your dev database. This is simpler and more reliable than down migrations.
+
+### In Production
+
+Down migrations seem safe but have many hidden assumptions:
+
+- ❌ The migration might have partially failed
+- ❌ The migration must be reversible (no dropped tables/data)
+- ❌ The down migration must work (are they tested?)
+- ❌ Rolling back schema but not code causes version mismatch
+- ❌ Large datasets make rollbacks too slow/lock-heavy
+
+Down migrations provide a **false sense of security**.
+
+<Note>
+**Recommended approach:** Follow the [expand-and-contract pattern](https://www.prisma.io/dataguide/types/relational/expand-and-contract-pattern) and roll forward, never backward.
+</Note>
+
+### Manual Rollbacks
+
+Prisma supports manual rollbacks:
+
+1. Diagnose the issue
+2. Manually fix the database
+3. Use `migrate resolve` to update the tracking table
+
+This gives you control without false automation.
+
+## Best Practices
+
+### Separate Data and Schema Migrations
+
+Prisma recommends **completely separating** data migrations from schema migrations:
+
+- Use a different tool/workflow for data migrations
+- Small projects can inline data changes in SQL
+- Large projects should run data migrations separately
+
+**Why?** Data migrations make schema migrations:
+- Longer-running
+- Riskier
+- Harder to test
+- More likely to fail
+
+Separating them de-risks schema changes.
+
+### Use Transactions When Possible
+
+Migrations are **not wrapped in transactions by default** for:
+- **Determinism** - Same behavior in dev and production
+- **Flexibility** - You can add `BEGIN;`/`COMMIT;` yourself
+- **Consistency** - Not all databases support DDL in transactions (MySQL)
+- **Performance** - Large migrations without transactions are faster
+
+<Accordion title="How to add transactions">
+
+Add `BEGIN;` and `COMMIT;` to your migration file:
+
+```sql migration.sql
+BEGIN;
+
+ALTER TABLE "User" ADD COLUMN "email" TEXT NOT NULL;
+CREATE INDEX "User_email_idx" ON "User"("email");
+
+COMMIT;
+```
+
+<Warning>
+MySQL does not support transactional DDL. Adding BEGIN/COMMIT will have no effect.
+</Warning>
+
+</Accordion>
+
+### Never Use `IF NOT EXISTS`
+
+Generated migrations should not use `IF NOT EXISTS` clauses because:
+
+- Diffing should **always know** if something exists
+- Precision is critical for migration generation
+- Conditional logic hides schema state
+
+The rule: "Never use IF NOT EXISTS, we should always know if something exists."
+
+## Drift Detection
+
+**Drift** occurs when the actual database schema doesn't match the applied migrations.
+
+### In Development (`migrate dev`)
+
+✅ Detects drift and offers to resolve it (usually by reset)
+
+### In Production (`migrate deploy`)
+
+❌ Does **not** detect drift by design
+
+**Why?** Drift detection requires a shadow database, which:
+- Adds complexity to deployment
+- Many teams are uncomfortable with temporary databases in prod pipelines
+- Deploy should be light, simple, and never block deployments
+
+By design, `deploy` errs on the side of **not standing in the way**.
+
+<Note>
+If drift occurs in production, use `prisma migrate status` to diagnose, then manually resolve and use `migrate resolve` to update the tracking table.
+</Note>
+
+## Related Commands
+
+| Command | Purpose |
+|---------|----------|
+| `migrate deploy` | Apply pending migrations (production) |
+| `migrate dev` | Create and apply migrations (development) |
+| `migrate status` | Check migration history and detect issues |
+| `migrate resolve` | Mark migrations as applied/rolled-back |
+| `migrate reset` | Reset database and reapply all migrations |
+
+## Source Code References
+
+Key implementation files:
+
+- Table creation: `schema-engine/connectors/sql-schema-connector/src/flavour/{postgres,mysql,mssql}.rs`
+- Migration persistence: `schema-engine/connectors/sql-schema-connector/src/sql_migration_persistence.rs`
+- Core logic: `schema-engine/core/src/commands/`

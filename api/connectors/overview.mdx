@@ -1,0 +1,210 @@
+---
+title: 'Connector Architecture'
+description: 'Overview of Prisma Engines connector architecture, traits, and capabilities'
+---
+
+## Overview
+
+Prisma Engines uses a modular connector architecture to support multiple database systems. Connectors abstract database-specific operations for both query execution and schema management.
+
+## Core Architecture
+
+### Query Engine Connectors
+
+Query engine connectors implement the data access layer for executing CRUD operations, aggregations, and transactions.
+
+#### Main Traits
+
+**Connector Trait** (`query-engine/connectors/query-connector/src/interface.rs`)
+
+```rust
+pub trait Connector {
+    async fn get_connection(&self) -> Result<Box<dyn Connection + Send + Sync>>;
+    fn name(&self) -> &'static str;
+    fn should_retry_on_transient_error(&self) -> bool;
+}
+```
+
+The `Connector` trait provides:
+- Connection pooling and management
+- Database system identification for telemetry (OTEL spec compliant)
+- Transient error retry logic (MongoDB-specific)
+
+**Connection Trait**
+
+```rust
+pub trait Connection: ConnectionLike {
+    async fn start_transaction(
+        &mut self,
+        isolation_level: Option<String>,
+    ) -> Result<Box<dyn Transaction>>;
+    async fn version(&self) -> Option<String>;
+    fn as_connection_like(&mut self) -> &mut dyn ConnectionLike;
+}
+```
+
+**Transaction Trait**
+
+```rust
+pub trait Transaction: ConnectionLike {
+    async fn commit(&mut self) -> Result<()>;
+    async fn rollback(&mut self) -> Result<()>;
+    async fn version(&self) -> Option<String>;
+    fn as_connection_like(&mut self) -> &mut dyn ConnectionLike;
+}
+```
+
+**ConnectionLike Marker**
+
+```rust
+pub trait ConnectionLike: ReadOperations + WriteOperations + Send + Sync {}
+```
+
+### Schema Engine Connectors
+
+Schema engine connectors handle migrations, introspection, and schema validation.
+
+#### SchemaConnector Trait
+
+Location: `schema-engine/connectors/schema-connector/src/schema_connector.rs`
+
+Key responsibilities:
+- **Migration management**: Create, apply, and validate migrations
+- **Introspection**: Generate Prisma schema from existing databases
+- **Schema operations**: Create/drop databases, reset schemas
+- **Version compatibility**: Check database version support
+
+```rust
+pub trait SchemaConnector: Send + Sync + 'static {
+    fn schema_dialect(&self) -> Box<dyn SchemaDialect>;
+    fn acquire_lock(&mut self) -> BoxFuture<'_, ConnectorResult<()>>;
+    fn apply_migration(&mut self, migration: &Migration) -> BoxFuture<'_, ConnectorResult<u32>>;
+    fn connector_type(&self) -> &'static str;
+    fn introspect(&mut self, ctx: &IntrospectionContext) -> BoxFuture<'_, ConnectorResult<IntrospectionResult>>;
+    // ... additional methods
+}
+```
+
+#### SchemaDialect Trait
+
+Abstracts database-specific migration rendering and schema diffing:
+
+```rust
+pub trait SchemaDialect: Send + Sync + 'static {
+    fn diff(&self, from: DatabaseSchema, to: DatabaseSchema, filter: &SchemaFilter) -> Migration;
+    fn render_script(&self, migration: &Migration, diagnostics: &DestructiveChangeDiagnostics) -> ConnectorResult<String>;
+    fn migration_file_extension(&self) -> &'static str;
+    fn migration_len(&self, migration: &Migration) -> usize;
+    fn schema_from_datamodel(&self, sources: Vec<(String, SourceFile)>) -> ConnectorResult<DatabaseSchema>;
+}
+```
+
+## Operations
+
+### Read Operations
+
+All connectors implement the `ReadOperations` trait:
+
+- `get_single_record`: Fetch one record by filter
+- `get_many_records`: Fetch multiple records with query arguments
+- `get_related_m2m_record_ids`: Fetch IDs from join tables for M2M relations
+- `aggregate_records`: Execute aggregation queries (count, sum, avg, min, max)
+
+### Write Operations
+
+- `create_record`: Insert single record
+- `create_records`: Bulk insert (with skip duplicates support)
+- `create_records_returning`: Bulk insert with returned data
+- `update_records`: Update multiple records
+- `update_record`: Update single record
+- `native_upsert_record`: Database-native upsert
+- `delete_records`: Delete multiple records
+- `delete_record`: Delete single record with returned data
+- `m2m_connect` / `m2m_disconnect`: Manage M2M join tables
+- `execute_raw` / `query_raw`: Raw SQL/query execution
+
+### Schema Operations
+
+- **Migration**: Create migrations by diffing schemas, render to SQL/scripts, apply to database
+- **Introspection**: Scan database structure, generate Prisma schema
+- **Validation**: Check migration compatibility, validate connection
+- **Database lifecycle**: Create, drop, reset databases
+
+## Connector Capabilities
+
+Connectors expose capabilities through `ConnectorCapabilities` bitflags:
+
+<Tabs>
+  <Tab title="Query Features">
+    - `CreateMany`: Bulk insert support
+    - `CreateSkipDuplicates`: Skip duplicate rows on insert
+    - `InsertReturning` / `UpdateReturning` / `DeleteReturning`: Return affected rows
+    - `NativeUpsert`: Database-native upsert
+    - `JsonFiltering`: JSON field filtering
+    - `FullTextSearch`: Native full-text search
+  </Tab>
+  <Tab title="Schema Features">
+    - `AutoIncrement`: Auto-increment IDs
+    - `CompoundIds`: Composite primary keys
+    - `Enums`: Native enum types
+    - `Json`: JSON column support
+    - `ScalarLists`: Array types
+    - `MultiSchema`: Multiple schema/namespace support
+    - `NamedForeignKeys` / `NamedPrimaryKeys`: Named constraints
+  </Tab>
+  <Tab title="Transaction Features">
+    - `SupportsTxIsolationReadUncommitted`
+    - `SupportsTxIsolationReadCommitted`
+    - `SupportsTxIsolationRepeatableRead`
+    - `SupportsTxIsolationSerializable`
+  </Tab>
+</Tabs>
+
+## Supported Databases
+
+Prisma Engines currently supports:
+
+| Database | Provider | Schema Connector | Query Connector |
+|----------|----------|------------------|------------------|
+| PostgreSQL | `postgresql` | ✅ SqlSchemaConnector | Via Query Compiler |
+| MySQL | `mysql` | ✅ SqlSchemaConnector | Via Query Compiler |
+| SQLite | `sqlite` | ✅ SqlSchemaConnector | Via Query Compiler |
+| SQL Server | `sqlserver` | ✅ SqlSchemaConnector | Via Query Compiler |
+| CockroachDB | `cockroachdb` | ✅ SqlSchemaConnector | Via Query Compiler |
+| MongoDB | `mongodb` | ✅ MongoDbSchemaConnector | Legacy (QC planned) |
+
+<Note>
+  **Query Compiler Architecture**: Prisma 7+ uses the Query Compiler (QC) architecture where query planning happens in Rust and execution runs in TypeScript using driver adapters. The native Rust query engine has been removed.
+</Note>
+
+## Migration Table
+
+SQL connectors store migration history in the `_prisma_migrations` table:
+
+- `id`: Migration UUID
+- `checksum`: Migration content hash
+- `finished_at`: Completion timestamp
+- `migration_name`: Migration directory name
+- `logs`: Execution logs
+- `rolled_back_at`: Rollback timestamp
+- `started_at`: Start timestamp
+- `applied_steps_count`: Number of migration steps
+
+## Error Handling
+
+Connectors translate database errors to user-facing errors:
+
+- **SQL**: Quaint errors mapped to `ConnectorError` with user-facing messages
+- **MongoDB**: MongoDB errors converted via `mongo_error_to_connector_error`
+- **Version incompatibility**: `DatabaseVersionIncompatibility` errors
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="SQL Connectors" icon="database" href="/api/connectors/sql">
+    Learn about SQL connector implementation
+  </Card>
+  <Card title="MongoDB Connector" icon="leaf" href="/api/connectors/mongodb">
+    Explore MongoDB connector specifics
+  </Card>
+</CardGroup>

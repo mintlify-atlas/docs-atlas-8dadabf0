@@ -1,0 +1,267 @@
+---
+title: Schema Engine CLI
+description: Command-line interface and JSON-RPC API for the Prisma Schema Engine binary
+---
+
+The **schema-engine** binary provides database migration and introspection capabilities for Prisma. It can run as a JSON-RPC server over stdin/stdout or execute standalone CLI commands.
+
+## Binary Location
+
+After building:
+
+```bash
+./target/debug/schema-engine     # Debug build
+./target/release/schema-engine   # Release build
+```
+
+## Interfaces
+
+The schema engine provides two interfaces:
+
+1. **JSON-RPC Server** (default) - For interactive communication from the Prisma CLI
+2. **CLI Commands** - For standalone database operations
+
+## JSON-RPC Server Mode
+
+When run without arguments, the schema engine starts as a JSON-RPC server:
+
+```bash
+schema-engine
+```
+
+### Command Line Options
+
+<ParamField path="--datamodels" type="string[]" default="[]">
+  List of paths to Prisma schema files
+</ParamField>
+
+<ParamField path="--datasource" type="JSON" default="{}">
+  Optional JSON string to override datasource URLs in the schema. Format:
+  ```json
+  {
+    "url": "postgresql://user:pass@localhost:5432/db",
+    "directUrl": "postgresql://...",
+    "shadowDatabaseUrl": "postgresql://..."
+  }
+  ```
+</ParamField>
+
+<ParamField path="--extension-types" type="JSON">
+  Optional extension type configuration for TypedSQL and other extensions
+</ParamField>
+
+### JSON-RPC Methods
+
+The schema engine exposes these JSON-RPC methods:
+
+#### Migration Operations
+
+- `createMigration` - Generate a new migration from schema changes
+- `applyMigrations` - Apply pending migrations to the database
+- `unapplyMigration` - Revert the last migration
+- `listMigrationDirectories` - List all migrations in the migrations directory
+- `markMigrationApplied` - Mark a migration as applied without running it
+- `markMigrationRolledBack` - Mark a migration as rolled back
+- `devDiagnostic` - Analyze migration history for development
+- `diagnoseMigrationHistory` - Check migration history status
+- `evaluateDataLoss` - Analyze potential data loss in pending migrations
+
+#### Schema Operations
+
+- `schemaPush` - Push schema changes without creating migrations
+- `reset` - Reset the database to a clean state
+- `introspect` - Generate a Prisma schema from an existing database
+
+#### Database Operations
+
+- `createDatabase` - Create a new database
+- `dropDatabase` - Drop the database
+- `ensureConnectionValidity` - Test database connection
+
+#### Diffing Operations
+
+- `diff` - Compare two schemas and generate a migration script
+
+## CLI Commands
+
+Standalone commands that don't require a running server:
+
+```bash
+schema-engine cli <SUBCOMMAND>
+```
+
+### create-database
+
+Create an empty database defined in the connection string:
+
+```bash
+schema-engine cli create-database \
+  --datasource '{"url":"postgresql://localhost:5432/mydb"}'
+```
+
+**Output**: `Database 'mydb' was successfully created.`
+
+### can-connect-to-database
+
+Test if the database connection string works:
+
+```bash
+schema-engine cli can-connect-to-database \
+  --datasource '{"url":"postgresql://localhost:5432/mydb"}'
+```
+
+**Output**: `Connection successful`
+
+### drop-database
+
+Drop the database:
+
+```bash
+schema-engine cli drop-database \
+  --datasource '{"url":"postgresql://localhost:5432/mydb"}'
+```
+
+<Warning>
+  This permanently deletes all data in the database. Use with caution.
+</Warning>
+
+**Output**: `The database was successfully dropped.`
+
+## Logging and Error Reporting
+
+The schema engine outputs structured JSON logs to **stderr**:
+
+```typescript
+interface StdErrLine {
+  timestamp: string;
+  level: "INFO" | "ERROR" | "DEBUG" | "WARN";
+  fields: LogFields;
+}
+
+interface LogFields {
+  message: string;
+  is_panic?: boolean;    // Only for ERROR level
+  error_code?: string;   // Only for ERROR level
+  [key: string]: any;
+}
+```
+
+### Log Levels
+
+Control logging with the `RUST_LOG` environment variable:
+
+```bash
+# Show all logs
+RUST_LOG=debug schema-engine
+
+# Show only schema-core logs
+RUST_LOG=schema_core=debug schema-engine
+
+# Show specific module
+RUST_LOG=sql_migration=trace schema-engine
+```
+
+## Exit Codes
+
+<ResponseField name="0" type="exit code">
+  Normal exit - operation completed successfully
+</ResponseField>
+
+<ResponseField name="1" type="exit code">
+  Abnormal exit - operation failed with an error
+</ResponseField>
+
+<ResponseField name="101" type="exit code">
+  Panic - the engine crashed due to an unrecoverable error
+</ResponseField>
+
+<Note>
+  Non-zero exit codes are always accompanied by an ERROR-level log message on stderr.
+</Note>
+
+## Environment Variables
+
+<ParamField path="PRISMA_GRACEFUL_SHUTDOWN_TIMEOUT" type="milliseconds" default="4000">
+  Timeout for graceful shutdown of async tasks on SIGTERM
+</ParamField>
+
+<ParamField path="PRISMA_BLOCKING_TASKS_SHUTDOWN_TIMEOUT" type="milliseconds" default="200">
+  Deadline for blocking background tasks during shutdown
+</ParamField>
+
+<ParamField path="RUST_LOG" type="string">
+  Configure logging verbosity (e.g., `debug`, `schema_core=trace`)
+</ParamField>
+
+## Building the Binary
+
+<Steps>
+  <Step title="Build with Cargo">
+    ```bash
+    # Debug build
+    cargo build -p schema-engine-cli
+
+    # Release build (optimized)
+    cargo build --release -p schema-engine-cli
+    ```
+  </Step>
+
+  <Step title="Find the binary">
+    ```bash
+    # Debug
+    ./target/debug/schema-engine
+
+    # Release
+    ./target/release/schema-engine
+    ```
+  </Step>
+
+  <Step title="Test it">
+    ```bash
+    ./target/debug/schema-engine --version
+    ```
+  </Step>
+</Steps>
+
+## Integration with Prisma CLI
+
+The TypeScript Prisma CLI spawns the schema-engine binary and communicates via JSON-RPC:
+
+```typescript
+// Prisma CLI spawns the process
+const schemaEngine = spawn('schema-engine', [
+  '--datamodels', schemaPath,
+  '--datasource', JSON.stringify(datasourceUrls)
+]);
+
+// Send JSON-RPC requests to stdin
+schemaEngine.stdin.write(JSON.stringify({
+  jsonrpc: '2.0',
+  id: 1,
+  method: 'createMigration',
+  params: { ... }
+}));
+
+// Receive responses from stdout
+schemaEngine.stdout.on('data', (data) => {
+  const response = JSON.parse(data);
+  // Handle response
+});
+```
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Schema Engine Overview" icon="database" href="/schema-engine/overview">
+    Learn about the schema engine architecture
+  </Card>
+  <Card title="Migrations" icon="code-branch" href="/schema-engine/migrations">
+    Understand how migrations work
+  </Card>
+  <Card title="Introspection" icon="magnifying-glass" href="/schema-engine/introspection">
+    Database schema introspection
+  </Card>
+  <Card title="Schema Core Library" icon="book" href="/api/schema-core">
+    Core API reference
+  </Card>
+</CardGroup>

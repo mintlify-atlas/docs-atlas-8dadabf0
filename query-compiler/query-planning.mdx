@@ -1,0 +1,470 @@
+---
+title: Query Planning
+description: Deep dive into query planning and graph translation
+---
+
+Query planning is the process of transforming a query graph into an optimized expression tree that can be executed by the TypeScript interpreter.
+
+## Query Graph Structure
+
+The query graph is a directed graph where:
+
+- **Nodes** represent operations (queries, computations, control flow)
+- **Edges** represent dependencies (data flow, execution order)
+
+### Node Types
+
+```rust
+pub enum Node {
+    /// Database query (read or write)
+    Query(Query),
+    
+    /// Empty placeholder node
+    Empty,
+    
+    /// Control flow (if/else, return)
+    Flow(Flow),
+    
+    /// In-memory computation (diff, etc.)
+    Computation(Computation),
+}
+```
+
+### Edge Types
+
+```rust
+pub enum QueryGraphDependency {
+    /// Execution ordering (A must run before B)
+    ExecutionOrder,
+    
+    /// Data dependency with projection
+    ProjectedDataDependency(FieldSelection, RowSink, Option<DataExpectation>),
+    
+    /// Raw data dependency
+    DataDependency(RowCountSink, Option<DataExpectation>),
+    
+    /// Conditional branch (then)
+    Then,
+    
+    /// Conditional branch (else)
+    Else,
+}
+```
+
+## Translation Process
+
+The `translate` function is the entry point:
+
+```rust
+pub fn translate(mut graph: QueryGraph, builder: &dyn QueryBuilder) -> TranslateResult<Expression> {
+    let mut enums = EnumsMap::new();
+    let mut result_node_builder = ResultNodeBuilder::new(&mut enums);
+    let structure = map_result_structure(&graph, &mut result_node_builder);
+
+    // Collect root nodes
+    let root_nodes: Vec<NodeRef> = graph.root_nodes().collect();
+
+    // Translate each root node
+    let root = root_nodes
+        .into_iter()
+        .map(|node| NodeTranslator::new(&mut graph, node, &[], builder).translate())
+        .collect::<TranslateResult<Vec<_>>>()
+        .map(Expression::Seq)?;
+
+    // Wrap with data mapping if needed
+    let mut root = if let Some(structure) = structure {
+        Expression::DataMap {
+            expr: Box::new(root),
+            structure,
+            enums,
+        }
+    } else {
+        root
+    };
+
+    // Optimize
+    root.simplify();
+    
+    // Wrap in transaction if needed
+    if graph.needs_transaction() {
+        return Ok(Expression::Transaction(Box::new(root)));
+    }
+    
+    Ok(root)
+}
+```
+
+From `query-compiler/src/translate.rs`
+
+## Node Translation
+
+The `NodeTranslator` walks the graph and generates expressions:
+
+<Steps>
+  <Step title="Mark Node as Visited">
+    Prevent infinite loops in cyclic graphs:
+
+    ```rust
+    fn translate(&mut self) -> TranslateResult<Expression> {
+        self.graph.mark_visited(&self.node);
+        // ...
+    }
+    ```
+  </Step>
+
+  <Step title="Extract Node Content">
+    Get the actual node data:
+
+    ```rust
+    let node = self
+        .graph
+        .node_content(&self.node)
+        .ok_or_else(|| TranslateError::NodeContentEmpty(self.node.id()))?;
+    ```
+  </Step>
+
+  <Step title="Dispatch by Node Type">
+    Different node types require different translation logic:
+
+    ```rust
+    match node {
+        Node::Query(_) => self.translate_query(),
+        Node::Empty => self.translate_children(),
+        Node::Flow(Flow::If { .. }) => self.translate_if(),
+        Node::Flow(Flow::Return(_)) => self.translate_return(),
+        Node::Computation(Computation::DiffLeftToRight(_)) => self.translate_diff_left_to_right(),
+        Node::Computation(Computation::DiffRightToLeft(_)) => self.translate_diff_right_to_left(),
+    }
+    ```
+  </Step>
+</Steps>
+
+## Query Translation
+
+Translating a database query node:
+
+```rust
+fn translate_query(&mut self) -> TranslateResult<Expression> {
+    // Translate child nodes first
+    let children = self.translate_children()?;
+
+    // Extract and transform the query node
+    let node = self.graph.pluck_node(&self.node);
+    let node = self.transform_node(node)?;
+
+    // Convert to Query type
+    let query: Query = node.try_into().expect("current node must be query");
+    
+    // Generate SQL expression
+    let expr = translate_query(query, self.query_builder)?;
+
+    // Wrap with children if any
+    Ok(self.wrap_children_with_expr(expr, children))
+}
+```
+
+## Conditional Translation
+
+Translating an `if` node creates a conditional expression:
+
+```rust
+fn translate_if(&mut self) -> TranslateResult<Expression> {
+    let mut then_node = None;
+    let mut else_node = None;
+
+    // Find then/else branches
+    for (edge, node) in self.graph.direct_child_pairs(&self.node) {
+        match self.graph.edge_content(&edge) {
+            Some(QueryGraphDependency::Then) => {
+                self.graph.pluck_edge(&edge);
+                then_node = Some(node);
+            }
+            Some(QueryGraphDependency::Else) => {
+                self.graph.pluck_edge(&edge);
+                else_node = Some(node);
+            }
+            _ => {}
+        }
+    }
+
+    let then_expr = match then_node {
+        Some(node) => self.process_child_with_dependencies(node)?,
+        None => return Err(/* missing then branch */),
+    };
+
+    let else_expr = match else_node {
+        Some(node) => self.process_child_with_dependencies(node)?,
+        None => Expression::Unit,
+    };
+
+    // Extract the condition
+    let Node::Flow(Flow::If { rule, data }) = node else {
+        panic!("current node must be Flow::If");
+    };
+
+    let expr = Expression::If {
+        value: Expression::Get {
+            name: SelectionResults::new(data).into_placeholder()?.name,
+        }.into(),
+        rule,
+        then: then_expr.into(),
+        r#else: else_expr.into(),
+    };
+
+    Ok(expr)
+}
+```
+
+## Data Dependencies
+
+Data dependencies flow through the graph via bindings:
+
+<Tabs>
+  <Tab title="Projected Dependencies">
+    When a node needs specific fields from a parent:
+
+    ```rust
+    QueryGraphDependency::ProjectedDataDependency(selection, sink, expectation)
+    ```
+
+    Creates field-level bindings:
+
+    ```rust
+    Binding::new(
+        binding::projected_dependency(source, field),
+        Expression::MapField {
+            field: field.db_name().into(),
+            records: Expression::Get {
+                name: binding::node_result(source),
+            }.into(),
+        },
+    )
+    ```
+  </Tab>
+
+  <Tab title="Row Count Dependencies">
+    When a node needs to validate result counts:
+
+    ```rust
+    QueryGraphDependency::DataDependency(RowCountSink::Discard, expectation)
+    ```
+
+    Creates validation expressions:
+
+    ```rust
+    Expression::Validate {
+        expr: expr.into(),
+        rules: expectation.rules().to_vec(),
+        error_identifier: expectation.error().id(),
+        context: expectation.error().context(),
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## Query Building
+
+The `QueryBuilder` trait abstracts SQL generation:
+
+```rust
+pub trait QueryBuilder {
+    fn build_select(&self, query: SelectQuery) -> Result<DbQuery>;
+    fn build_insert(&self, query: InsertQuery) -> Result<DbQuery>;
+    fn build_update(&self, query: UpdateQuery) -> Result<DbQuery>;
+    fn build_delete(&self, query: DeleteQuery) -> Result<DbQuery>;
+}
+```
+
+Database-specific builders implement this trait:
+
+```rust
+impl QueryBuilder for SqlQueryBuilder<visitor::Postgres<'_>> { /* ... */ }
+impl QueryBuilder for SqlQueryBuilder<visitor::Mysql<'_>> { /* ... */ }
+impl QueryBuilder for SqlQueryBuilder<visitor::Sqlite<'_>> { /* ... */ }
+impl QueryBuilder for SqlQueryBuilder<visitor::Mssql<'_>> { /* ... */ }
+```
+
+## In-Memory Processing
+
+Some operations happen in-memory after data is fetched:
+
+```rust
+#[derive(Debug, Serialize)]
+pub struct InMemoryOps {
+    /// Pagination (cursor, take, skip)
+    pub pagination: Option<Pagination>,
+    
+    /// Distinct on fields
+    pub distinct: Option<Vec<String>>,
+    
+    /// Reverse result order
+    pub reverse: bool,
+    
+    /// Nested operations for relations
+    pub nested: BTreeMap<String, InMemoryOps>,
+    
+    /// Fields to use for linking parent/child
+    pub linking_fields: Option<Vec<String>>,
+}
+```
+
+These are wrapped in a `Process` expression:
+
+```rust
+Expression::Process {
+    expr: query_expr.into(),
+    operations: in_memory_ops,
+}
+```
+
+## Application-Level Joins
+
+When relation joins can't be done in SQL:
+
+```rust
+Expression::Join {
+    parent: Box::new(parent_query),
+    children: vec![
+        JoinExpression {
+            child: child_query,
+            on: vec![("parent_id".into(), "id".into())],
+            parent_field: "posts".into(),
+            is_relation_unique: false,
+        }
+    ],
+    can_assume_strict_equality: true,
+}
+```
+
+The interpreter:
+
+1. Executes parent query
+2. Extracts join keys from parent results
+3. Executes child query with `WHERE key IN (...)`
+4. Merges results in-memory based on `on` conditions
+
+## Result Node Structure
+
+The result structure describes how to shape the final output:
+
+```rust
+pub enum ResultNode {
+    /// A record with named fields
+    Record(BTreeMap<String, ResultNode>),
+    
+    /// A list of items
+    List(Box<ResultNode>),
+    
+    /// A leaf value
+    Leaf,
+}
+```
+
+This enables the data mapper to transform flat database results into nested JSON.
+
+## Optimizations
+
+The planner applies several optimizations:
+
+<CardGroup cols={2}>
+  <Card title="Subquery Elimination" icon="compress">
+    Flatten nested queries where possible to reduce round-trips.
+  </Card>
+
+  <Card title="Projection Pushdown" icon="filter">
+    Only select fields that are actually needed.
+  </Card>
+
+  <Card title="Predicate Pushdown" icon="arrow-down">
+    Push WHERE clauses as deep as possible.
+  </Card>
+
+  <Card title="Join Coalescing" icon="link">
+    Combine multiple joins when safe to do so.
+  </Card>
+</CardGroup>
+
+## Benchmarking Query Planning
+
+Benchmark the compilation process:
+
+```bash
+# Run all benchmarks
+cargo bench -p query-compiler --profile profiling
+
+# Save a baseline
+cargo bench -p query-compiler --profile profiling -- --save-baseline main
+
+# Compare against baseline
+cargo bench -p query-compiler --profile profiling -- --baseline main
+```
+
+From the `Makefile`:
+
+```makefile
+bench-qc:
+	cargo bench -p query-compiler --profile profiling
+
+bench-qc-baseline:
+	cargo bench -p query-compiler --profile profiling -- --save-baseline $(NAME)
+
+bench-qc-compare:
+	cargo bench -p query-compiler --profile profiling -- --baseline $(NAME)
+```
+
+## Query Graph Benchmarks
+
+Benchmark just the graph building phase:
+
+```bash
+cargo bench -p core-tests --profile profiling --bench query_graph_bench
+```
+
+## Profiling
+
+Profile a specific query:
+
+```bash
+cargo run -p query-compiler --example profile_query --profile profiling
+```
+
+This runs the `profile_query` example which you can customize for your specific use case.
+
+## Playground
+
+Explore query planning interactively:
+
+```bash
+cargo run -p query-compiler-playground
+```
+
+The playground lets you:
+
+- Input a Prisma schema
+- Write a GraphQL query
+- See the generated expression tree
+- Export Graphviz diagrams (if `dot` is installed)
+
+Dependencies from `query-compiler-playground/Cargo.toml`:
+
+```toml
+[dependencies]
+psl = { workspace = true, features = ["all"] }
+query-compiler = { workspace = true, features = ["all"] }
+request-handlers.workspace = true
+query-core.workspace = true
+quaint = { workspace = true, features = ["all-native"] }
+sql-query-builder.workspace = true
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Overview" icon="book" href="/query-compiler/overview">
+    Return to architecture overview
+  </Card>
+
+  <Card title="WASM Build" icon="cube" href="/query-compiler/wasm-build">
+    Build the WebAssembly module
+  </Card>
+</CardGroup>

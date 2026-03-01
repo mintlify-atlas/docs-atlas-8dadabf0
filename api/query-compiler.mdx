@@ -1,0 +1,246 @@
+---
+title: query-compiler
+description: Query compilation library that translates query graphs into executable expression trees
+---
+
+The `query-compiler` crate is the core of Prisma's query compilation architecture. It transforms high-level query graphs into executable expression trees that can be interpreted by driver adapters in Prisma Client.
+
+## Overview
+
+The query compiler takes a `QueryGraph` and connection information as input, then produces an `Expression` tree representing the query execution plan. This expression tree is sent to the TypeScript interpreter in Prisma Client, which executes it using driver adapters.
+
+## Installation
+
+```toml
+[dependencies]
+query-compiler = "0.1.0"
+```
+
+## Core Functions
+
+### compile
+
+Compiles a query operation into an executable expression tree.
+
+```rust
+pub fn compile(
+    query_schema: &QuerySchema,
+    query: Operation,
+    connection_info: &ConnectionInfo,
+) -> Result<Expression, CompileError>
+```
+
+<ParamField path="query_schema" type="&QuerySchema" required>
+  The query schema containing model and field definitions
+</ParamField>
+
+<ParamField path="query" type="Operation" required>
+  The query operation to compile (read or write)
+</ParamField>
+
+<ParamField path="connection_info" type="&ConnectionInfo" required>
+  Database connection information including SQL family
+</ParamField>
+
+<ResponseField name="Expression" type="Expression">
+  The compiled expression tree ready for execution
+</ResponseField>
+
+<ResponseField name="CompileError" type="Error">
+  Compilation error if the query cannot be compiled
+</ResponseField>
+
+## Types
+
+### Expression
+
+The core expression type representing query execution steps.
+
+```rust
+pub enum Expression {
+    Value(PrismaValue),
+    Seq(Vec<Expression>),
+    Get { name: Cow<'static, str> },
+    Let { bindings: Vec<Binding>, expr: Box<Expression> },
+    GetFirstNonEmpty { names: Vec<Cow<'static, str>> },
+    Query(DbQuery),
+    Execute(DbQuery),
+    Sum(Vec<Expression>),
+    Concat(Vec<Expression>),
+    Unique(Box<Expression>),
+    Required(Box<Expression>),
+    Join { parent: Box<Expression>, children: Vec<JoinExpression>, can_assume_strict_equality: bool },
+    MapField { field: String, records: Box<Expression> },
+    Transaction(Box<Expression>),
+    DataMap { expr: Box<Expression>, structure: ResultNode, enums: EnumsMap },
+    Validate { expr: Box<Expression>, rules: Vec<DataRule>, error_identifier: &'static str, context: serde_json::Value },
+    If { value: Box<Expression>, rule: DataRule, then: Box<Expression>, r#else: Box<Expression> },
+    Unit,
+    Diff { from: Box<Expression>, to: Box<Expression>, fields: Vec<String> },
+    InitializeRecord { expr: Box<Expression>, fields: BTreeMap<String, FieldInitializer> },
+    MapRecord { expr: Box<Expression>, fields: BTreeMap<String, FieldOperation> },
+    Process { expr: Box<Expression>, operations: InMemoryOps },
+}
+```
+
+#### Expression Variants
+
+<ParamField path="Value" type="PrismaValue">
+  A plain value literal
+</ParamField>
+
+<ParamField path="Seq" type="Vec<Expression>">
+  Sequence of expressions evaluated in order. Returns the result of the last expression.
+</ParamField>
+
+<ParamField path="Query" type="DbQuery">
+  A database query that returns data
+</ParamField>
+
+<ParamField path="Execute" type="DbQuery">
+  A database query that returns the number of affected rows
+</ParamField>
+
+<ParamField path="Join" type="{ parent, children, can_assume_strict_equality }">
+  Application-level join operation for loading relations
+</ParamField>
+
+<ParamField path="Transaction" type="Box<Expression>">
+  Wraps an expression to run inside a database transaction
+</ParamField>
+
+### CompileError
+
+Errors that can occur during compilation.
+
+```rust
+pub enum CompileError {
+    UnsupportedRequest,
+    GraphBuildError(QueryGraphBuilderError),
+    TranslateError(TranslateError),
+}
+```
+
+### Binding
+
+Represents a let-binding in the expression tree.
+
+```rust
+pub struct Binding {
+    pub name: Cow<'static, str>,
+    pub expr: Expression,
+}
+```
+
+### FieldOperation
+
+Operations that can be performed on record fields.
+
+```rust
+pub enum FieldOperation {
+    Set(PrismaValue),
+    Add(PrismaValue),
+    Subtract(PrismaValue),
+    Multiply(PrismaValue),
+    Divide(PrismaValue),
+}
+```
+
+### InMemoryOps
+
+Operations performed in-memory on query results.
+
+```rust
+pub struct InMemoryOps {
+    pub pagination: Option<Pagination>,
+    pub distinct: Option<Vec<String>>,
+    pub reverse: bool,
+    pub nested: BTreeMap<String, InMemoryOps>,
+    pub linking_fields: Option<Vec<String>>,
+}
+```
+
+## Methods
+
+### Expression::simplify
+
+Simplifies an expression tree by removing redundant operations.
+
+```rust
+pub fn simplify(&mut self)
+```
+
+This method performs optimizations like:
+- Removing single-element sequences
+- Inlining single bindings
+- Flattening nested operations
+
+### Expression::pretty_print
+
+Formats the expression tree for human-readable display.
+
+```rust
+pub fn pretty_print(&self, color: bool, width: usize) -> Result<String, PrettyPrintError>
+```
+
+<ParamField path="color" type="bool" required>
+  Whether to include ANSI color codes in output
+</ParamField>
+
+<ParamField path="width" type="usize" required>
+  Maximum line width for formatting
+</ParamField>
+
+## Feature Flags
+
+The crate supports database-specific features:
+
+```toml
+[features]
+default = ["all"]
+sqlite = ["quaint/sqlite"]
+postgresql = ["quaint/postgresql"]
+mysql = ["quaint/mysql"]
+mssql = ["quaint/mssql"]
+cockroachdb = ["postgresql"]
+all = ["sqlite", "postgresql", "mysql", "mssql", "cockroachdb"]
+```
+
+## Dependencies
+
+Key dependencies:
+
+- `psl` - Prisma Schema Language parser
+- `query-structure` - Query structure types
+- `query-builder` - SQL query builder
+- `query-core` - Core query graph types
+- `sql-query-builder` - SQL-specific query building
+- `quaint` - Database abstraction layer
+
+## Examples
+
+### Basic Query Compilation
+
+```rust
+use query_compiler::{compile, Expression};
+use query_core::{Operation, QuerySchema};
+use quaint::prelude::ConnectionInfo;
+
+let connection_info = ConnectionInfo::from_url("postgresql://...").unwrap();
+let query_schema = /* build query schema */;
+let operation = /* create operation */;
+
+match compile(&query_schema, operation, &connection_info) {
+    Ok(expression) => {
+        // Expression is ready for execution
+        println!("Compiled: {}", expression);
+    }
+    Err(e) => eprintln!("Compilation failed: {}", e),
+}
+```
+
+## Related
+
+- [query-structure](/api/query-structure) - Type definitions for queries
+- [Query Compiler Overview](/query-compiler/overview) - Architecture and design
+- [Driver Adapters](/query-compiler/driver-adapters) - Execution layer

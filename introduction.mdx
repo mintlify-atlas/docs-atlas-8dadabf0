@@ -1,0 +1,159 @@
+---
+title: 'Introduction to Prisma Engines'
+description: 'A collection of engines that power Prisma Client and Prisma Migrate'
+---
+
+<img
+  className="block dark:hidden"
+  src="/images/hero-light.svg"
+  alt="Prisma Engines Hero Light"
+/>
+<img
+  className="hidden dark:block"
+  src="/images/hero-dark.svg"
+  alt="Prisma Engines Hero Dark"
+/>
+
+## What are Prisma Engines?
+
+Prisma Engines is a collection of high-performance engines that power the core stack for [Prisma](https://github.com/prisma/prisma), including **Prisma Client** and **Prisma Migrate**. Built in Rust for speed and reliability, these engines handle query compilation, database migrations, schema introspection, and more.
+
+<Note>
+  If you're looking to install Prisma or use the engines in your application, check out the [Getting Started](https://www.prisma.io/docs/getting-started) guide in the main Prisma documentation.
+</Note>
+
+## Core Components
+
+<CardGroup cols={2}>
+  <Card title="Query Compiler" icon="code" href="/components/query-compiler">
+    Compiles Prisma Client queries into executable plans (SQL + orchestration) that run through driver adapters in JavaScript
+  </Card>
+  
+  <Card title="Schema Engine" icon="database" href="/components/schema-engine">
+    Creates and runs migrations, performs introspection, and manages database schemas
+  </Card>
+  
+  <Card title="Driver Adapters" icon="plug" href="/query-compiler/driver-adapters">
+    TypeScript utilities that load query plans, communicate with database drivers, and expose compatibility protocols
+  </Card>
+  
+  <Card title="Prisma Format" icon="paintbrush" href="/components/prisma-fmt">
+    Formatter and LSP (Language Server Protocol) implementation for Prisma schema files
+  </Card>
+</CardGroup>
+
+## Prisma Schema Language (PSL)
+
+The **Prisma Schema Language** defines the data structures and parsing rules for Prisma schema files, including available database connectors. PSL is used throughout:
+
+- Schema Engine for migrations and introspection
+- Prisma Format for formatting and language server features
+- Query Compiler via the DataModel (DML), an annotated version of PSL
+
+<CodeGroup>
+```prisma Example Schema
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String?
+  posts     Post[]
+  createdAt DateTime @default(now())
+}
+
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  author    User     @relation(fields: [authorId], references: [id])
+  authorId  Int
+}
+```
+</CodeGroup>
+
+## Key Features
+
+<AccordionGroup>
+  <Accordion title="High Performance" icon="rocket">
+    Written in Rust for maximum performance and memory safety. The query compiler generates optimized query plans that execute efficiently across all supported databases.
+  </Accordion>
+  
+  <Accordion title="Multi-Database Support" icon="server">
+    Native support for PostgreSQL, MySQL, MariaDB, SQL Server, SQLite, CockroachDB, and MongoDB (via driver adapters).
+  </Accordion>
+  
+  <Accordion title="Type-Safe Migrations" icon="shield">
+    Declarative schema migrations with automatic migration generation. The Schema Engine compares your Prisma schema with the current database state to generate migration files.
+  </Accordion>
+  
+  <Accordion title="Driver Adapter Architecture" icon="puzzle-piece">
+    Modern architecture where query execution happens through TypeScript driver adapters, enabling support for serverless databases and edge runtimes.
+  </Accordion>
+  
+  <Accordion title="Introspection" icon="magnifying-glass">
+    Generate Prisma schemas from existing databases. The Schema Engine can reverse-engineer your database schema into a Prisma schema file.
+  </Accordion>
+  
+  <Accordion title="WebAssembly Support" icon="cube">
+    Query compiler and schema engine components available as WebAssembly modules for browser and edge runtime compatibility.
+  </Accordion>
+</AccordionGroup>
+
+## Repository Structure
+
+The prisma-engines repository contains:
+
+- **Query Compiler** (`query-compiler/`) - Query planning and compilation logic
+- **Schema Engine** (`schema-engine/`) - Migration and introspection engine
+- **PSL** (`psl/`) - Prisma Schema Language parser and validator
+- **Driver Adapters** (`libs/driver-adapters/`) - Rust-side adapter utilities
+- **Prisma Format** (`prisma-fmt/`) - Schema formatter and LSP server
+- **Libraries** (`libs/`) - Shared utilities, error handling, connectors, and more
+- **Quaint** (`quaint/`) - Database abstraction layer
+
+## Supported Databases
+
+Prisma Engines supports multiple database systems:
+
+| Database | Versions | Driver Adapters Available |
+|----------|----------|---------------------------|
+| PostgreSQL | 9.6, 10, 11, 12, 13, 14, 15, 16 | `pg`, `neon`, `@prisma/adapter-pg` |
+| MySQL | 5.6, 5.7, 8.0+ | `@prisma/adapter-mysql` |
+| MariaDB | 10.x+ | `mariadb` |
+| SQL Server | 2017, 2019, 2022 | `@prisma/adapter-mssql` |
+| SQLite | Latest | `better-sqlite3`, `libsql` |
+| CockroachDB | 21.x+ | `@prisma/adapter-pg-cockroachdb` |
+| PlanetScale | - | `@prisma/adapter-planetscale` |
+
+<Warning>
+  MongoDB support is currently in development for the Query Compiler architecture. MongoDB will be added once a driver adapter is available.
+</Warning>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    Learn about the internal architecture and how components work together
+  </Card>
+  
+  <Card title="Getting Started" icon="rocket" href="/getting-started">
+    Build and run the engines locally for development
+  </Card>
+  
+  <Card title="Development Guide" icon="code" href="/development/building">
+    Learn how to contribute and develop features for Prisma Engines
+  </Card>
+  
+  <Card title="API Documentation" icon="book" href="https://prisma.github.io/prisma-engines/">
+    Browse the complete API documentation generated from source code
+  </Card>
+</CardGroup>
+
+## Community and Support
+
+Prisma Engines is open source and actively maintained. Join the community:
+
+- [GitHub Repository](https://github.com/prisma/prisma-engines) - Source code and issues
+- [Prisma Documentation](https://www.prisma.io/docs) - User-facing documentation
+- [Discord Community](https://pris.ly/discord) - Get help and discuss
+- [Twitter](https://twitter.com/prisma) - Latest updates and announcements

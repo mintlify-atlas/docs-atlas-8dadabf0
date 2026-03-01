@@ -1,0 +1,578 @@
+---
+title: 'Validation Pipeline'
+description: 'Schema validation and parser-database architecture'
+---
+
+# Validation Pipeline
+
+The validation pipeline transforms a parsed AST into a semantically validated schema. This is handled by the `parser-database` and `psl-core` crates.
+
+## Parser Database
+
+The `ParserDatabase` is the core container for validated schema information:
+
+```toml
+[dependencies]
+diagnostics.workspace = true
+schema-ast.workspace = true
+indexmap.workspace = true
+enumflags2.workspace = true
+itertools.workspace = true
+either.workspace = true
+rustc-hash.workspace = true
+```
+
+### Purpose and Scope
+
+The parser database is **connector-agnostic** - it performs generic validations that apply to all databases:
+
+- Name resolution and uniqueness
+- Type checking
+- Relationship validation
+- Attribute syntax validation
+- Constraint name generation
+
+Connector-specific validations (like native types, capabilities) happen later in `psl-core`.
+
+<Info>
+  ParserDatabase never fails. It accumulates diagnostics while building as complete a database as possible, even with errors in the schema.
+</Info>
+
+## Validation Phases
+
+Validation proceeds in four phases:
+
+### 1. Name Resolution
+
+First pass: resolve all identifiers to IDs
+
+```rust
+pub struct ParserDatabase {
+    names: Names,  // Maps names to IDs
+    // ...
+}
+```
+
+Resolved items:
+- Models and views
+- Enums
+- Composite types
+- Fields (model fields, composite fields)
+- Datasources
+- Generators
+
+Each item gets a unique ID:
+
+```rust
+pub struct ModelId(u32);
+pub struct EnumId(u32);
+pub struct ScalarFieldId { model: ModelId, field: u32 };
+// ... other ID types
+```
+
+### 2. Type Resolution
+
+Second pass: resolve type references
+
+```rust
+pub struct Types {
+    // Field type -> (ScalarType | Model | Enum | CompositeType)
+    // ...
+}
+```
+
+For each field:
+- Resolve type identifier to its definition
+- Determine if it's a scalar, relation, enum, or composite
+- Handle optional/required/list arity
+- Validate type compatibility
+
+### 3. Attribute Validation
+
+Third pass: validate attributes on models and fields
+
+```rust
+// Attributes on fields
+@id
+@unique
+@default(...)
+@relation(...)
+@map("db_name")
+@db.NativeType(...)
+
+// Attributes on models
+@@id([field1, field2])
+@@unique([field1, field2])
+@@index([field1, field2])
+@@map("table_name")
+```
+
+Validations:
+- Required vs. optional arguments
+- Argument types
+- Attribute compatibility
+- Duplicate attributes
+
+### 4. Global Validations
+
+Fourth pass: cross-cutting validations
+
+- Relation completeness and consistency
+- Index name collisions
+- Unique constraint validation
+- Primary key requirements
+- Referential actions compatibility
+
+## Database Structure
+
+```rust
+pub struct ParserDatabase {
+    asts: Files,                      // Multi-file ASTs
+    interner: StringInterner,         // Deduplicated strings
+    names: Names,                     // Name -> ID mappings
+    types: Types,                     // Type resolution data
+    relations: Relations,             // Relation graph
+    extension_metadata: ExtensionMetadata,
+}
+```
+
+### String Interning
+
+Efficient string storage:
+
+```rust
+pub struct StringInterner {
+    // Deduplicates strings, returns StringId
+}
+
+pub struct StringId(u32);
+```
+
+Benefits:
+- Reduced memory usage
+- Fast string comparison (compare IDs)
+- Canonical representation
+
+### Type System
+
+```rust
+pub enum ScalarType {
+    Int,
+    BigInt,
+    Float,
+    Decimal,
+    Boolean,
+    String,
+    DateTime,
+    Json,
+    Bytes,
+}
+
+pub enum ScalarFieldType {
+    BuiltInScalar(ScalarType),
+    CompositeType(CompositeTypeId),
+    Enum(EnumId),
+    Unsupported(String),
+}
+```
+
+### Relations
+
+```rust
+pub struct Relations {
+    // Tracks all relations in the schema
+}
+
+pub struct RelationId(u32);
+
+pub struct ManyToManyRelationId(u32);
+
+pub enum ReferentialAction {
+    Cascade,
+    Restrict,
+    NoAction,
+    SetNull,
+    SetDefault,
+}
+```
+
+## Walker API
+
+The walker API provides type-safe schema traversal:
+
+```rust
+use parser_database::walkers::*;
+
+let db: ParserDatabase = /* ... */;
+
+// Iterate all models
+for model in db.walk_models() {
+    println!("Model: {}", model.name());
+    
+    // Iterate fields
+    for field in model.scalar_fields() {
+        println!("  Field: {} : {}", 
+                 field.name(), 
+                 field.scalar_type());
+    }
+    
+    // Iterate relations
+    for relation in model.relation_fields() {
+        println!("  Relation: {} -> {}", 
+                 relation.name(),
+                 relation.related_model().name());
+    }
+}
+```
+
+### Walker Types
+
+```rust
+pub struct ModelWalker<'db> { /* ... */ }
+pub struct EnumWalker<'db> { /* ... */ }
+pub struct ScalarFieldWalker<'db> { /* ... */ }
+pub struct RelationFieldWalker<'db> { /* ... */ }
+pub struct IndexWalker<'db> { /* ... */ }
+// ... many more
+```
+
+Walkers provide:
+- Safe access to schema data
+- Navigation between related items
+- Computed properties
+- Database name resolution
+
+<Note>
+  Walkers borrow from ParserDatabase, ensuring data consistency. They're lightweight and can be created on-demand.
+</Note>
+
+## Validation Examples
+
+### Name Uniqueness
+
+```rust
+model User {
+  id   Int @id
+  name String
+}
+
+model User {  // ERROR: Duplicate model name
+  id Int @id
+}
+```
+
+Validation error: `DatamodelError::new_duplicate_top_error("User", ...)`
+
+### Type Resolution
+
+```rust
+model Post {
+  id       Int  @id
+  authorId Int
+  author   User @relation(fields: [authorId], references: [id])
+  category Category  // ERROR if Category doesn't exist
+}
+```
+
+### Relation Validation
+
+```rust
+model User {
+  id    Int    @id
+  posts Post[]  // One-to-many relation
+}
+
+model Post {
+  id       Int  @id
+  authorId Int
+  // ERROR: Missing relation field
+  // Should have: author User @relation(...)
+}
+```
+
+### Attribute Validation
+
+```rust
+model User {
+  id    Int    @id @default(autoincrement())
+  email String @unique @unique  // ERROR: Duplicate attribute
+  name  String @default(123)     // ERROR: Type mismatch
+}
+```
+
+## Constraint Names
+
+The database generates default constraint names:
+
+```rust
+model User {
+  id        Int    @id
+  email     String @unique
+  firstName String
+  lastName  String
+  
+  @@unique([firstName, lastName])  // Gets generated name
+  @@index([email])                 // Gets generated name
+}
+```
+
+Constraint scopes:
+```rust
+pub enum ConstraintScope {
+    GlobalPrimaryKeyKeyIndex,
+    ModelPrimaryKeyKeyIndexForeignKey,
+    GlobalForeignKey,
+    ModelKeyIndex,
+}
+```
+
+<Info>
+  Constraint name generation is connector-specific, handled by the connector trait's `constraint_violation_scopes()` method.
+</Info>
+
+## Reserved Names
+
+Certain names are reserved and validated:
+
+```rust
+pub fn is_reserved_type_name(name: &str) -> bool {
+    matches!(
+        name,
+        "String" | "Int" | "Float" | "Boolean" | "DateTime" | "Json" | "Bytes" | "Decimal" | "BigInt"
+    )
+}
+```
+
+## Index Definitions
+
+Indexes are validated and stored:
+
+```rust
+pub struct IndexFieldPath {
+    // Path to the indexed field (supports nested fields)
+}
+
+pub enum IndexType {
+    Normal,
+    Unique,
+    Fulltext,
+}
+
+pub enum IndexAlgorithm {
+    BTree,
+    Hash,
+    Gist,
+    Gin,
+    // ... connector-specific algorithms
+}
+
+pub enum SortOrder {
+    Asc,
+    Desc,
+}
+```
+
+## Extension Types
+
+Support for custom types via extensions:
+
+```rust
+pub trait ExtensionTypes: Send + Sync {
+    fn get(&self, name: &str) -> Option<ExtensionTypeId>;
+    fn get_entry(&self, id: ExtensionTypeId) -> &ExtensionTypeEntry;
+}
+
+pub struct NoExtensionTypes;  // Default: no extensions
+
+impl ExtensionTypes for NoExtensionTypes {
+    fn get(&self, _: &str) -> Option<ExtensionTypeId> {
+        None
+    }
+    // ...
+}
+```
+
+Extensions allow adding custom types to the schema without modifying PSL core.
+
+## Diagnostic Collection
+
+Diagnostics accumulate throughout validation:
+
+```rust
+use diagnostics::{Diagnostics, DatamodelError, DatamodelWarning};
+
+let mut diagnostics = Diagnostics::new();
+
+let db = ParserDatabase::new_single_file(
+    source,
+    &mut diagnostics,
+    extension_types,
+);
+
+if diagnostics.has_errors() {
+    eprintln!("Schema validation failed:");
+    eprintln!("{}", diagnostics.to_pretty_string(
+        "schema.prisma",
+        &source,
+    ));
+}
+```
+
+### Error Types
+
+```rust
+pub enum DatamodelError {
+    DuplicateTopError { name: String, span: Span },
+    TypeNotFoundError { type_name: String, span: Span },
+    RelationValidationError { message: String, span: Span },
+    // ... many more variants
+}
+```
+
+## Validation Pipeline Entry Points
+
+### Single File
+
+```rust
+use psl_core::validate;
+
+let validated = validate(
+    source_file,
+    connector_registry,
+    extension_types,
+);
+```
+
+### Multi-File
+
+```rust
+use psl_core::validate_multi_file;
+
+let files = vec![
+    ("schema.prisma".into(), source1),
+    ("models.prisma".into(), source2),
+];
+
+let validated = validate_multi_file(
+    &files,
+    connector_registry,
+    extension_types,
+);
+```
+
+### Parse Only (Skip Validation)
+
+```rust
+use psl_core::parse_without_validation;
+
+let schema = parse_without_validation(
+    source_file,
+    connector_registry,
+    extension_types,
+);
+```
+
+## Testing
+
+PSL uses declarative validation tests:
+
+```
+tests/validation/
+  models/
+    valid_model.prisma
+    duplicate_field.prisma
+    invalid_type.prisma
+  relations/
+    one_to_many.prisma
+    many_to_many.prisma
+```
+
+Test format:
+```prisma
+model User {
+  id   Int @id
+  name name  // Lowercase type
+}
+
+// error: Type "name" is not defined.
+//   --> schema.prisma:3
+//    |
+//  2 |   id   Int @id
+//  3 |   name name
+//    |
+```
+
+Running tests:
+```bash
+# All validation tests
+cargo test -p psl --test validation_tests
+
+# Update expectations
+UPDATE_EXPECT=1 cargo test -p psl --test validation_tests
+
+# Specific test directory
+cargo test -p psl --test validation_tests models
+```
+
+<Note>
+  Tests with no error comment at the end expect a valid schema. Tests with error comments expect those exact errors.
+</Note>
+
+## Configuration Parsing
+
+Parse only datasource and generator blocks:
+
+```rust
+use psl::parse_configuration;
+
+let config = parse_configuration(schema)?;
+
+for datasource in &config.datasources {
+    println!("Datasource: {}", datasource.name);
+    println!("Provider: {}", datasource.active_provider);
+}
+
+for generator in &config.generators {
+    println!("Generator: {}", generator.name);
+    println!("Provider: {:?}", generator.provider);
+}
+```
+
+This is faster than full validation when you only need configuration.
+
+## Common Validations
+
+### Primary Key Validation
+
+- Every model needs an `@id` or `@@id`
+- Single-field or compound primary keys
+- Primary key fields cannot be optional
+
+### Unique Constraint Validation
+
+- Single-field `@unique` or compound `@@unique`
+- Unique fields can be optional
+- Unique constraints can have names via `map:`
+
+### Relation Validation
+
+- Both sides of relation must have fields
+- Referencing fields must match referenced fields in type and count
+- Referential actions must be supported by the connector
+
+### Default Value Validation
+
+- Default must match field type
+- Functions like `autoincrement()`, `now()`, `uuid()` validated per connector
+- Constants validated for type compatibility
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Connectors" icon="database" href="/psl/connectors">
+    Learn about database-specific validations
+  </Card>
+  <Card title="Parser" icon="code" href="/psl/parser">
+    Understand the AST and parsing phase
+  </Card>
+</CardGroup>

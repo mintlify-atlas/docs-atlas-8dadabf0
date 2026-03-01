@@ -1,0 +1,340 @@
+---
+title: schema-core (schema-commands)
+description: Schema engine commands for migrations, introspection, and schema operations
+---
+
+The `schema-commands` crate (also known as schema-core) provides the core functionality for the Prisma schema engine, including migrations, introspection, and schema operations.
+
+## Overview
+
+This library implements all schema engine commands that are exposed through the JSON-RPC API. It handles database migrations, schema introspection, schema diffing, and validation.
+
+## Installation
+
+```toml
+[dependencies]
+schema-commands = "0.1.0"
+```
+
+## Core Modules
+
+### Commands
+
+The `commands` module contains implementations for all schema engine operations:
+
+- `apply_migrations` - Apply pending migrations to the database
+- `create_migration` - Create a new migration from schema changes
+- `dev_diagnostic` - Run development-time diagnostics
+- `diagnose_migration_history` - Analyze migration history for issues
+- `diff` - Compare two schemas and show differences
+- `evaluate_data_loss` - Analyze potential data loss in migrations
+- `introspect_sql` - Introspect a database and generate a schema
+- `mark_migration_applied` - Mark a migration as applied without running it
+- `mark_migration_rolled_back` - Mark a migration as rolled back
+- `schema_push` - Push schema changes directly to the database
+
+## Key Types
+
+### GenericApi
+
+The main API trait for schema engine operations.
+
+```rust
+pub trait GenericApi {
+    async fn apply_migrations(&self, input: ApplyMigrationsInput) -> CoreResult<ApplyMigrationsOutput>;
+    async fn create_migration(&self, input: CreateMigrationInput) -> CoreResult<CreateMigrationOutput>;
+    async fn dev_diagnostic(&self, input: DevDiagnosticInput) -> CoreResult<DevDiagnosticOutput>;
+    async fn diagnose_migration_history(&self, input: DiagnoseMigrationHistoryInput) -> CoreResult<DiagnoseMigrationHistoryOutput>;
+    async fn diff(&self, input: DiffInput) -> CoreResult<DiffOutput>;
+    async fn evaluate_data_loss(&self, input: EvaluateDataLossInput) -> CoreResult<EvaluateDataLossOutput>;
+    async fn introspect(&self, input: IntrospectSqlInput) -> CoreResult<IntrospectSqlOutput>;
+    async fn mark_migration_applied(&self, input: MarkMigrationAppliedInput) -> CoreResult<MarkMigrationAppliedOutput>;
+    async fn mark_migration_rolled_back(&self, input: MarkMigrationRolledBackInput) -> CoreResult<MarkMigrationRolledBackOutput>;
+    async fn schema_push(&self, input: SchemaPushInput) -> CoreResult<SchemaPushOutput>;
+}
+```
+
+### CoreError
+
+Error type for schema engine operations.
+
+```rust
+pub enum CoreError {
+    SchemaParserError(Diagnostics),
+    ConnectorError(ConnectorError),
+    Generic(String),
+    // ... other variants
+}
+```
+
+<ParamField path="SchemaParserError" type="Diagnostics">
+  Schema parsing and validation errors
+</ParamField>
+
+<ParamField path="ConnectorError" type="ConnectorError">
+  Database connector errors
+</ParamField>
+
+<ParamField path="Generic" type="String">
+  Generic error with message
+</ParamField>
+
+## Schema Operations
+
+### Introspection
+
+Introspect a database and generate a Prisma schema.
+
+```rust
+pub async fn introspect(
+    schema: SchemaContainer,
+    connection_string: String,
+) -> CoreResult<IntrospectSqlOutput>
+```
+
+<ParamField path="schema" type="SchemaContainer">
+  Base schema with datasource configuration
+</ParamField>
+
+<ParamField path="connection_string" type="String">
+  Database connection string to introspect
+</ParamField>
+
+<ResponseField name="IntrospectSqlOutput" type="object">
+  Contains the generated schema and warnings
+  
+  - `schema` - Generated Prisma schema
+  - `warnings` - Introspection warnings
+  - `views` - Database views discovered
+</ResponseField>
+
+### Create Migration
+
+Create a new migration from schema changes.
+
+```rust
+pub async fn create_migration(
+    input: CreateMigrationInput,
+) -> CoreResult<CreateMigrationOutput>
+```
+
+<ParamField path="migration_name" type="String">
+  Name for the new migration
+</ParamField>
+
+<ParamField path="schema" type="SchemaContainer">
+  The target schema to migrate to
+</ParamField>
+
+<ParamField path="draft" type="bool">
+  Whether to create a draft migration
+</ParamField>
+
+<ResponseField name="CreateMigrationOutput" type="object">
+  - `migration_id` - ID of the created migration
+  - `migration_script` - SQL script for the migration
+  - `warnings` - Warnings about the migration
+</ResponseField>
+
+### Apply Migrations
+
+Apply pending migrations to the database.
+
+```rust
+pub async fn apply_migrations(
+    input: ApplyMigrationsInput,
+) -> CoreResult<ApplyMigrationsOutput>
+```
+
+<ParamField path="migrations_directory" type="String">
+  Path to the migrations directory
+</ParamField>
+
+<ParamField path="schema" type="SchemaContainer">
+  The Prisma schema
+</ParamField>
+
+<ResponseField name="ApplyMigrationsOutput" type="object">
+  - `applied_migration_names` - List of applied migration names
+  - `warnings` - Warnings from applying migrations
+</ResponseField>
+
+### Schema Push
+
+Push schema changes directly to the database without migrations.
+
+```rust
+pub async fn schema_push(
+    input: SchemaPushInput,
+) -> CoreResult<SchemaPushOutput>
+```
+
+<ParamField path="schema" type="SchemaContainer">
+  The schema to push
+</ParamField>
+
+<ParamField path="force" type="bool">
+  Whether to force push even with data loss
+</ParamField>
+
+<ResponseField name="SchemaPushOutput" type="object">
+  - `executed_steps` - Number of steps executed
+  - `warnings` - Push warnings
+  - `unexecutable` - Reasons why push failed (if applicable)
+</ResponseField>
+
+### Diff
+
+Compare two schemas or a schema and database.
+
+```rust
+pub async fn diff(
+    input: DiffInput,
+) -> CoreResult<DiffOutput>
+```
+
+<ParamField path="from" type="DiffTarget">
+  Source schema or database
+</ParamField>
+
+<ParamField path="to" type="DiffTarget">
+  Target schema or database
+</ParamField>
+
+<ParamField path="script" type="bool">
+  Whether to return SQL script or human-readable diff
+</ParamField>
+
+<ResponseField name="DiffOutput" type="object">
+  - `diff` - The diff as SQL script or human-readable format
+  - `exit_code` - Exit code (0 if no changes, 2 if changes)
+</ResponseField>
+
+## Helper Functions
+
+### dialect_for_provider
+
+Create a schema dialect for a given provider.
+
+```rust
+pub fn dialect_for_provider(provider: &str) -> CoreResult<Box<dyn SchemaDialect>>
+```
+
+<ParamField path="provider" type="&str" required>
+  Database provider name (postgresql, mysql, sqlite, mssql, mongodb)
+</ParamField>
+
+<ResponseField name="SchemaDialect" type="Box<dyn SchemaDialect>">
+  The schema dialect implementation for the provider
+</ResponseField>
+
+### extract_namespaces
+
+Extract database namespaces from schema files.
+
+```rust
+pub fn extract_namespaces(
+    files: &[(String, SourceFile)],
+    namespaces: &mut Vec<String>,
+    preview_features: &mut BitFlags<PreviewFeature>,
+)
+```
+
+## Feature Flags
+
+Database provider support is controlled by feature flags:
+
+```toml
+[features]
+postgresql = ["sql-schema-connector/postgresql"]
+postgresql-native = ["postgresql"]
+sqlite = ["sql-schema-connector/sqlite"]
+sqlite-native = ["sqlite"]
+mysql = ["sql-schema-connector/mysql"]
+mysql-native = ["mysql"]
+mssql = ["sql-schema-connector/mssql"]
+mssql-native = ["mssql"]
+cockroachdb = ["sql-schema-connector/cockroachdb"]
+cockroachdb-native = ["cockroachdb"]
+mongodb = ["mongodb-schema-connector"]
+mongodb-native = ["mongodb"]
+all-native = [
+    "postgresql-native",
+    "sqlite-native",
+    "mysql-native",
+    "mssql-native",
+    "cockroachdb-native",
+    "mongodb-native",
+]
+```
+
+## Dependencies
+
+Key dependencies:
+
+- `psl` - Prisma Schema Language parser
+- `schema-connector` - Schema connector trait
+- `sql-schema-connector` - SQL database schema operations
+- `mongodb-schema-connector` - MongoDB schema operations (optional)
+- `quaint` - Database abstraction layer
+- `user-facing-errors` - User-friendly error messages
+- `jsonrpc-core` - JSON-RPC protocol support
+
+## Examples
+
+### Introspecting a Database
+
+```rust
+use schema_commands::{GenericApi, IntrospectSqlInput};
+
+let input = IntrospectSqlInput {
+    schema: SchemaContainer {
+        path: "schema.prisma".to_string(),
+        content: "datasource db { provider = \"postgresql\" }".to_string(),
+    },
+    connection_string: "postgresql://localhost/mydb".to_string(),
+    composite_type_depth: -1,
+};
+
+let output = api.introspect(input).await?;
+println!("Generated schema:\n{}", output.schema);
+```
+
+### Creating a Migration
+
+```rust
+use schema_commands::{GenericApi, CreateMigrationInput};
+
+let input = CreateMigrationInput {
+    migrations_directory_path: "./prisma/migrations".to_string(),
+    schema: schema_container,
+    migration_name: "add_user_table".to_string(),
+    draft: false,
+};
+
+let output = api.create_migration(input).await?;
+println!("Created migration: {}", output.migration_id);
+println!("SQL:\n{}", output.migration_script);
+```
+
+### Pushing Schema Changes
+
+```rust
+use schema_commands::{GenericApi, SchemaPushInput};
+
+let input = SchemaPushInput {
+    schema: schema_container,
+    force: false,
+};
+
+let output = api.schema_push(input).await?;
+if output.executed_steps > 0 {
+    println!("Applied {} changes", output.executed_steps);
+}
+```
+
+## Related
+
+- [psl-core](/api/psl-core) - Schema parsing and validation
+- [Schema Engine Overview](/schema-engine/overview) - Architecture guide
+- [Migrations Guide](/schema-engine/migrations) - Migration workflows

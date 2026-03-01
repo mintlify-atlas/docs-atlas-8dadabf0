@@ -1,0 +1,483 @@
+---
+title: 'SQL Connectors'
+description: 'Implementation details for PostgreSQL, MySQL, SQLite, SQL Server, and CockroachDB connectors'
+---
+
+## Overview
+
+The SQL schema connector (`sql-schema-connector`) provides a unified implementation for all SQL databases with database-specific "flavours" for PostgreSQL, MySQL, SQLite, SQL Server (MSSQL), and CockroachDB.
+
+Location: `schema-engine/connectors/sql-schema-connector/`
+
+## Architecture
+
+### SqlSchemaConnector
+
+The top-level SQL connector wraps database-specific flavour implementations:
+
+```rust
+pub struct SqlSchemaConnector {
+    inner: Box<dyn SqlConnector + Send + Sync + 'static>,
+    host: Arc<dyn ConnectorHost>,
+}
+```
+
+### SQL Dialect
+
+Each database has a dialect implementing database-specific behavior:
+
+```rust
+pub trait SqlDialect: Send + Sync + 'static {
+    fn renderer(&self) -> Box<dyn SqlRenderer>;
+    fn schema_differ(&self) -> Box<dyn SqlSchemaDifferFlavour>;
+    fn schema_calculator(&self) -> Box<dyn SqlSchemaCalculatorFlavour>;
+    fn destructive_change_checker(&self) -> Box<dyn DestructiveChangeCheckerFlavour>;
+    fn datamodel_connector(&self) -> &'static dyn Connector;
+    fn migrations_table(&self) -> Table<'static>;
+    // ...
+}
+```
+
+### SQL Connector Trait
+
+Internal trait for SQL-specific operations:
+
+```rust
+pub trait SqlConnector: Send + Sync + Debug {
+    fn dialect(&self) -> Box<dyn SqlDialect>;
+    fn describe_schema(&mut self, namespaces: Option<Namespaces>) -> BoxFuture<'_, ConnectorResult<SqlSchema>>;
+    fn introspect(&mut self, namespaces: Option<Namespaces>, ctx: &IntrospectionContext) -> BoxFuture<'_, ConnectorResult<SqlSchema>>;
+    fn create_database(&mut self) -> BoxFuture<'_, ConnectorResult<String>>;
+    fn drop_database(&mut self) -> BoxFuture<'_, ConnectorResult<()>>;
+    fn reset(&mut self, namespaces: Option<Namespaces>) -> BoxFuture<'_, ConnectorResult<()>>;
+    // ...
+}
+```
+
+## Supported Databases
+
+<Tabs>
+  <Tab title="PostgreSQL">
+    ### PostgreSQL Connector
+
+    **Provider**: `postgresql`
+
+    **Supported Versions**: 9.6+, recommended 12+
+
+    **Features**:
+    - Full ACID transactions with all isolation levels
+    - Native enums
+    - JSON/JSONB with filtering support
+    - Array types (scalar lists)
+    - Full-text search
+    - Multi-schema support
+    - Extensions (PostGIS, pg_trgm, etc.)
+    - Lateral joins
+    - Partial indexes
+    - Row-level security (RLS) aware
+
+    **Capabilities**:
+    ```rust
+    CAPABILITIES = AdvancedJsonNullability | AnyId | AutoIncrement |
+        AutoIncrementAllowedOnNonId | AutoIncrementMultipleAllowed |
+        CompoundIds | CreateMany | CreateSkipDuplicates | Enums |
+        NativeFullTextSearch | InsensitiveFilters | Json |
+        JsonFiltering | ScalarLists | MultiSchema | NamedForeignKeys |
+        NamedPrimaryKeys | UpdateableId | DecimalType |
+        OrderByNullsFirstLast | NativeUpsert | InsertReturning |
+        UpdateReturning | DeleteReturning | LateralJoin | PartialIndex
+    ```
+
+    **Connection String Format**:
+    ```
+    postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=SCHEMA
+    postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=SCHEMA&connection_limit=10
+    postgresql://USER:PASSWORD@HOST/DATABASE?host=/var/run/postgresql/
+    ```
+
+    **Parameters**:
+    - `schema`: Default schema (default: `public`)
+    - `connection_limit`: Max connections (default: unlimited)
+    - `connect_timeout`: Connection timeout in seconds
+    - `pool_timeout`: Pool acquisition timeout
+    - `sslmode`: SSL mode (`prefer`, `disable`, `require`)
+    - `sslcert`, `sslidentity`, `sslpassword`: SSL certificate options
+    - `host`: Unix socket path (alternative to hostname)
+
+    **Native Types**:
+    - `SmallInt`, `Integer`, `BigInt`
+    - `Decimal(p,s)`, `Money`
+    - `Real`, `DoublePrecision`
+    - `VarChar(n)`, `Char(n)`, `Text`
+    - `ByteA`
+    - `Timestamp(p)`, `Timestamptz(p)`, `Date`, `Time(p)`, `Timetz(p)`
+    - `Boolean`
+    - `Uuid`
+    - `Json`, `JsonB`
+    - `Xml`, `Inet`, `Citext`, `Bit(n)`, `VarBit(n)`
+
+    **Initialization**:
+    ```rust
+    #[cfg(feature = "postgresql-native")]
+    SqlSchemaConnector::new_postgres(params)?;
+
+    // Or auto-detect PostgreSQL vs CockroachDB
+    SqlSchemaConnector::new_postgres_like(params)?;
+    ```
+  </Tab>
+  <Tab title="MySQL">
+    ### MySQL Connector
+
+    **Provider**: `mysql`
+
+    **Supported Versions**: 5.7+, 8.0+
+
+    **Features**:
+    - Transactions with isolation levels
+    - Native enums
+    - JSON columns (MySQL 5.7.8+)
+    - Full-text indexes
+    - Multiple full-text attributes per model
+    - Index column length prefixing
+    - Correlated subqueries
+
+    **Capabilities**:
+    ```rust
+    CAPABILITIES = Enums | Json | AutoIncrementAllowedOnNonId |
+        CreateMany | CreateSkipDuplicates | UpdateableId |
+        JsonFiltering | CreateManyWriteableAutoIncId | AutoIncrement |
+        CompoundIds | AnyId | NamedForeignKeys | IndexColumnLengthPrefixing |
+        FullTextIndex | NativeFullTextSearch | DecimalType |
+        OrderByNullsFirstLast | RowIn | CorrelatedSubqueries
+    ```
+
+    **Connection String Format**:
+    ```
+    mysql://USER:PASSWORD@HOST:PORT/DATABASE
+    mysql://USER:PASSWORD@HOST:PORT/DATABASE?socket=/tmp/mysql.sock
+    mysql://USER:PASSWORD@HOST:PORT/DATABASE?connection_limit=10&ssl_mode=REQUIRED
+    ```
+
+    **Parameters**:
+    - `connection_limit`: Max connections
+    - `connect_timeout`: Connection timeout in seconds
+    - `pool_timeout`: Pool acquisition timeout
+    - `socket`: Unix socket path
+    - `sslcert`, `sslidentity`, `sslpassword`, `ssl_accept`: SSL options
+
+    **Native Types**:
+    - `TinyInt`, `SmallInt`, `MediumInt`, `Int`, `BigInt`
+    - `Decimal(p,s)`
+    - `Float`, `Double`
+    - `Bit(n)`
+    - `Char(n)`, `VarChar(n)`
+    - `Binary(n)`, `VarBinary(n)`
+    - `TinyBlob`, `Blob`, `MediumBlob`, `LongBlob`
+    - `TinyText`, `Text`, `MediumText`, `LongText`
+    - `Date`, `Time(p)`, `DateTime(p)`, `Timestamp(p)`
+    - `Year`
+    - `Json`
+
+    **Initialization**:
+    ```rust
+    #[cfg(feature = "mysql-native")]
+    SqlSchemaConnector::new_mysql(params)?;
+    ```
+  </Tab>
+  <Tab title="SQLite">
+    ### SQLite Connector
+
+    **Provider**: `sqlite`
+
+    **Supported Versions**: 3.8.0+, recommended 3.35+
+
+    **Features**:
+    - File-based and in-memory databases
+    - Transactions (serializable only)
+    - Foreign key constraints (requires explicit enable)
+    - JSON functions (3.38.0+)
+    - Flexible type system
+
+    **Capabilities**:
+    ```rust
+    CAPABILITIES = CompoundIds | InsensitiveFilters | JsonFiltering |
+        CreateMany | ScalarLists | JsonLists | AutoIncrement | AnyId |
+        NamedForeignKeys | CreateSkipDuplicates | UpdateableId |
+        ImplicitManyToManyRelation | DecimalType
+    ```
+
+    **Connection String Format**:
+    ```
+    file:./dev.db
+    file:./dev.db?connection_limit=1
+    file:/absolute/path/to/dev.db
+    file::memory:
+    ```
+
+    **Parameters**:
+    - `connection_limit`: Max connections (default: 1, recommended for SQLite)
+    - `socket_timeout`: Query timeout in seconds
+
+    **Native Types**:
+    SQLite uses dynamic typing with type affinities:
+    - `Integer`
+    - `Real`
+    - `Text`
+    - `Blob`
+
+    Prisma maps to storage classes:
+    - `Int` → INTEGER
+    - `BigInt` → INTEGER
+    - `Float` → REAL
+    - `Decimal` → TEXT (stored as string)
+    - `String` → TEXT
+    - `Boolean` → INTEGER (0/1)
+    - `DateTime` → TEXT (ISO8601)
+    - `Bytes` → BLOB
+    - `Json` → TEXT
+
+    **Initialization**:
+    ```rust
+    #[cfg(feature = "sqlite-native")]
+    SqlSchemaConnector::new_sqlite(params)?;
+
+    // In-memory database
+    SqlSchemaConnector::new_sqlite_inmem(preview_features)?;
+    ```
+  </Tab>
+  <Tab title="SQL Server">
+    ### SQL Server (MSSQL) Connector
+
+    **Provider**: `sqlserver`
+
+    **Supported Versions**: SQL Server 2017+, Azure SQL Database
+
+    **Features**:
+    - Transactions with isolation levels
+    - Named constraints
+    - Computed columns
+    - Filtered indexes
+    - Multiple result sets
+
+    **Capabilities**:
+    ```rust
+    CAPABILITIES = AnyId | CompoundIds | AutoIncrement |
+        InsensitiveFilters | CreateMany | ScalarLists | Enums |
+        NamedForeignKeys | NamedPrimaryKeys | AutoIncrementAllowedOnNonId |
+        CreateSkipDuplicates | UpdateableId | ImplicitManyToManyRelation |
+        DecimalType | OrderByNullsFirstLast | FilteredInlineChildNestedToOneDisconnect
+    ```
+
+    **Connection String Format**:
+    ```
+    sqlserver://HOST:PORT;database=DATABASE;user=USER;password=PASSWORD
+    sqlserver://HOST:PORT;database=DATABASE;integratedSecurity=true
+    sqlserver://HOST;database=DATABASE;user=USER;password=PASSWORD;encrypt=true
+    ```
+
+    **Parameters**:
+    - `database`: Database name (required)
+    - `schema`: Default schema (default: `dbo`)
+    - `user`, `password`: Authentication
+    - `integratedSecurity`: Windows authentication
+    - `encrypt`: Enable TLS encryption
+    - `trustServerCertificate`: Trust server certificate
+    - `connection_limit`: Max connections
+    - `connectTimeout`: Connection timeout (ms)
+
+    **Native Types**:
+    - `TinyInt`, `SmallInt`, `Int`, `BigInt`
+    - `Decimal(p,s)`, `Numeric(p,s)`, `Money`, `SmallMoney`
+    - `Real`, `Float(n)`
+    - `Bit`
+    - `Char(n)`, `NChar(n)`, `VarChar(n)`, `NVarChar(n)`, `Text`, `NText`
+    - `Binary(n)`, `VarBinary(n)`, `Image`
+    - `Date`, `Time(p)`, `DateTime`, `DateTime2(p)`, `SmallDateTime`, `DateTimeOffset(p)`
+    - `UniqueIdentifier`
+    - `Xml`
+
+    **Initialization**:
+    ```rust
+    #[cfg(feature = "mssql-native")]
+    SqlSchemaConnector::new_mssql(params)?;
+    ```
+  </Tab>
+  <Tab title="CockroachDB">
+    ### CockroachDB Connector
+
+    **Provider**: `cockroachdb`
+
+    **Supported Versions**: 21.2+, recommended 22.1+
+
+    **Features**:
+    - PostgreSQL wire protocol compatible
+    - Distributed SQL with strong consistency
+    - Serializable isolation (default)
+    - Same capabilities as PostgreSQL with some differences
+
+    **Differences from PostgreSQL**:
+    - Default schema is `public` (cannot be changed)
+    - Serial types use `unique_rowid()` instead of sequences
+    - Some PostgreSQL extensions not available
+    - Optimistic concurrency control
+
+    **Connection String Format**:
+    ```
+    postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public
+    ```
+
+    Same parameters as PostgreSQL.
+
+    **Initialization**:
+    ```rust
+    #[cfg(feature = "cockroachdb-native")]
+    SqlSchemaConnector::new_cockroach(params)?;
+    ```
+  </Tab>
+</Tabs>
+
+## Migration Workflow
+
+### 1. Schema Diffing
+
+```rust
+let migration = dialect.diff(from_schema, to_schema, &filter);
+```
+
+The differ generates migration steps:
+- `CreateTable`, `DropTable`, `AlterTable`
+- `CreateIndex`, `DropIndex`
+- `CreateEnum`, `DropEnum`, `AlterEnum`
+- `AddColumn`, `DropColumn`, `AlterColumn`
+- `AddForeignKey`, `DropForeignKey`
+- Database-specific steps (e.g., `CreateExtension` for PostgreSQL)
+
+### 2. Script Rendering
+
+```rust
+let script = dialect.render_script(&migration, &diagnostics)?;
+```
+
+Renderers generate database-specific SQL:
+- PostgreSQL: DDL with `IF EXISTS`, `CASCADE` support
+- MySQL: DDL with backtick identifiers
+- SQLite: DDL with table recreations (no `ALTER COLUMN`)
+- SQL Server: DDL with `GO` batch separators
+
+### 3. Destructive Change Checking
+
+```rust
+let diagnostics = connector.destructive_change_checker()
+    .check(&migration)
+    .await?;
+```
+
+Warns about:
+- Data loss (dropping tables, columns)
+- Type changes that may truncate data
+- Constraint changes that may fail on existing data
+
+### 4. Migration Application
+
+```rust
+let steps_applied = connector.apply_migration(&migration).await?;
+```
+
+Steps:
+1. Acquire advisory lock (if supported)
+2. Start transaction (if supported for DDL)
+3. Execute migration steps
+4. Record in `_prisma_migrations` table
+5. Commit and release lock
+
+## Introspection
+
+Introspection scans the database and generates a Prisma schema:
+
+```rust
+let result = connector.introspect(&ctx, extension_types).await?;
+```
+
+Process:
+1. **Describe schema**: Query system tables/catalogs
+2. **Build internal schema**: Create `SqlSchema` representation
+3. **Calculate datamodel**: Generate PSL from schema
+4. **Add warnings**: Flag unsupported features
+
+Generated elements:
+- Models from tables
+- Fields from columns with native types
+- Relations from foreign keys
+- Enums from database enums
+- Indexes and unique constraints
+- Default values
+
+## Shadow Database
+
+For migration validation, SQL connectors can use a shadow database:
+
+```rust
+let schema = dialect.schema_from_migrations_with_target(
+    migrations,
+    namespaces,
+    filter,
+    ExternalShadowDatabase::ConnectionString {
+        connection_string: shadow_url,
+        preview_features,
+    },
+).await?;
+```
+
+The shadow database:
+- Is a temporary database for applying migrations
+- Validates migration scripts work correctly
+- Is automatically created and dropped
+- Can be user-provided or auto-generated
+
+## Multi-Schema Support
+
+PostgreSQL and SQL Server support multiple schemas/namespaces:
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  schemas  = ["public", "auth", "billing"]
+}
+```
+
+Connector handles:
+- Schema-qualified table names
+- Cross-schema relations
+- Search path configuration
+- Migration targeting specific schemas
+
+## Advisory Locks
+
+PostgreSQL and MySQL use advisory locks to prevent concurrent migrations:
+
+```rust
+connector.acquire_lock().await?;
+```
+
+- PostgreSQL: `pg_advisory_lock()`
+- MySQL: `GET_LOCK()`
+- Other databases: No-op or file-based locking
+
+Disable with:
+```bash
+PRISMA_SCHEMA_DISABLE_ADVISORY_LOCK=1
+```
+
+## Performance Considerations
+
+- **Connection pooling**: Configure `connection_limit` appropriately
+- **Batch operations**: Use `create_records` instead of multiple `create_record`
+- **Relation loading**: `JoinStrategy` for N+1 query prevention (database version dependent)
+- **Indexes**: Introspection captures all indexes for query optimization
+
+## Next Steps
+
+<Card title="MongoDB Connector" icon="leaf" href="/api/connectors/mongodb">
+  Learn about the MongoDB connector implementation
+</Card>

@@ -1,0 +1,495 @@
+---
+title: "Testing Prisma Engines"
+description: "Running tests, connector test kit, and test suites for Prisma Engines"
+---
+
+## Test Organization
+
+Prisma Engines has two main test categories:
+
+1. **Unit tests** - Test internal functionality of individual crates and components
+2. **Integration tests** - Run end-to-end requests through the driver adapter executor and schema engine
+
+## Unit Tests
+
+Unit tests are distributed across the codebase, typically in `./tests` folders at the root of modules.
+
+### Run All Unit Tests
+
+To run unit tests for the whole workspace (excluding integration suites):
+
+```bash
+make test-unit
+```
+
+This excludes crates that require external services:
+- `quaint`
+- `query-engine-tests`
+- `sql-migration-tests`
+- `schema-engine-cli`
+- `sql-schema-describer`
+- `sql-introspection-tests`
+- `mongodb-schema-connector`
+
+### Run Tests for Specific Crates
+
+<CodeGroup>
+```bash PSL (Prisma Schema Language)
+cargo test -p psl -F all
+```
+
+```bash Prisma Format
+cargo test -p prisma-fmt -F psl/all
+```
+
+```bash Query Compiler
+cargo test -p query-compiler
+```
+
+```bash Schema Engine
+cargo test -p schema-engine
+```
+</CodeGroup>
+
+### Update Test Snapshots
+
+Many tests use `expect!` macro snapshots. When diagnostics or output changes:
+
+```bash
+UPDATE_EXPECT=1 cargo test -p prisma-fmt
+UPDATE_EXPECT=1 cargo test -p query-compiler
+```
+
+<Warning>
+  Always review snapshot diffs to ensure changes are intentional before committing.
+</Warning>
+
+## Integration Tests
+
+### Schema Engine Tests
+
+Schema engine tests require database connections. Set environment variables or use helper scripts:
+
+<Steps>
+  <Step title="Set Database Environment Variables">
+    Use the `.test_database_urls/` helper scripts:
+    
+    ```bash
+    source .test_database_urls/postgres
+    ```
+    
+    Or set manually:
+    
+    ```bash
+    export TEST_DATABASE_URL="postgres://user:password@localhost:5432/test"
+    export TEST_SHADOW_DATABASE_URL="postgres://user:password@localhost:5432/shadow"
+    ```
+  </Step>
+
+  <Step title="Run Schema Engine Tests">
+    ```bash
+    cargo test -p sql-migration-tests -- --nocapture
+    ```
+  </Step>
+</Steps>
+
+## Connector Test Kit (Query Compiler)
+
+The connector test kit exercises the query compiler and driver adapters end-to-end.
+
+### Architecture
+
+The test kit consists of three crates:
+
+```
+           ┌────────────────────┐
+       ┌───│ query-engine-tests │───┐
+       │   └────────────────────┘   │
+       ▼                            ▼
+┌────────────────────┐       ┌────────────────────┐
+│ query-test-macros  │       │ query-tests-setup  │
+└────────────────────┘       └────────────────────┘
+```
+
+- **query-engine-tests**: Actual integration tests in `tests/` folder
+- **query-test-macros**: Macro definitions (`#[connector_test]`, `#[test_suite]`)
+- **query-tests-setup**: Test configuration, connector tags, runners, logging
+
+### Prerequisites
+
+<Steps>
+  <Step title="Install Dependencies">
+    - Rust toolchain
+    - Docker (for SQL connectors)
+    - Node.js ≥ 20 and pnpm (for driver adapters)
+    - `direnv allow` in repository root
+  </Step>
+
+  <Step title="Clone Prisma Repository">
+    Driver adapters are built from the main Prisma repo:
+    
+    ```bash
+    cd ..
+    git clone https://github.com/prisma/prisma.git
+    cd prisma-engines
+    ```
+  </Step>
+</Steps>
+
+### Setup Test Environment
+
+Use `dev-*-qc` Makefile helpers to set up databases and build artifacts:
+
+<CodeGroup>
+```bash PostgreSQL
+make dev-pg-qc
+```
+
+```bash PostgreSQL with CockroachDB
+make dev-pg-cockroachdb-qc
+```
+
+```bash SQL Server
+make dev-mssql-qc
+```
+
+```bash PlanetScale
+make dev-planetscale-qc
+```
+
+```bash MariaDB
+make dev-mariadb-qc
+```
+
+```bash LibSQL
+make dev-libsql-qc
+```
+
+```bash Better-SQLite3
+make dev-better-sqlite3-qc
+```
+
+```bash Cloudflare D1
+make dev-d1-qc
+```
+
+```bash Neon
+make dev-neon-qc
+```
+</CodeGroup>
+
+These targets:
+1. Start the database container (if needed)
+2. Build query compiler Wasm (`build-qc-wasm-fast`)
+3. Build driver adapters kit (`build-driver-adapters-kit-qc`)
+4. Write `.test_config` file
+
+### Configuration
+
+Tests use either environment variables or a `.test_config` file:
+
+**Environment Variables:**
+```bash
+export WORKSPACE_ROOT=/path/to/prisma-engines
+export TEST_CONNECTOR="postgres"
+export TEST_CONNECTOR_VERSION="13"
+```
+
+**Config File (Recommended):**
+```json .test_config
+{
+    "connector": "postgres",
+    "version": "13"
+}
+```
+
+The config file should be in the current working directory or `$WORKSPACE_ROOT`.
+
+### Run Connector Tests
+
+<CodeGroup>
+```bash Basic Run
+cargo test -p query-engine-tests
+```
+
+```bash Verbose Output
+cargo test -p query-engine-tests -- --nocapture
+```
+
+```bash Single-threaded
+cargo test -p query-engine-tests -- --test-threads 1
+```
+
+```bash Specific Test
+cargo test -p query-engine-tests --test query_engine_tests -- queries::filters::where_unique --exact --nocapture
+```
+</CodeGroup>
+
+### Run with Make Targets
+
+<CodeGroup>
+```bash Test Query Engine
+make test-qe
+```
+
+```bash Test with Verbose Output
+make test-qe-verbose
+```
+
+```bash Test Single-threaded
+make test-qe-st
+```
+</CodeGroup>
+
+### Test Specific Driver Adapters
+
+Set `DRIVER_ADAPTER` environment variable:
+
+```bash
+DRIVER_ADAPTER=pg make test-qe
+DRIVER_ADAPTER=neon make test-qe
+DRIVER_ADAPTER=planetscale make test-qe
+```
+
+Or use dedicated targets:
+
+<CodeGroup>
+```bash PostgreSQL
+make test-pg-qc
+```
+
+```bash CockroachDB
+make test-pg-cockroachdb-qc
+```
+
+```bash SQL Server
+make test-mssql-qc
+```
+
+```bash PlanetScale
+make test-planetscale-qc
+```
+
+```bash MariaDB
+make test-mariadb-qc
+```
+
+```bash LibSQL
+make test-libsql-qc
+```
+
+```bash Better-SQLite3
+make test-better-sqlite3-qc
+```
+
+```bash Cloudflare D1
+make test-d1-qc
+```
+
+```bash Neon
+make test-neon-qc
+```
+</CodeGroup>
+
+### Driver Adapter Configuration
+
+For advanced driver adapter testing, set these environment variables:
+
+```bash
+export EXTERNAL_TEST_EXECUTOR="$WORKSPACE_ROOT/libs/driver-adapters/executor/script/testd-qc.sh"
+export DRIVER_ADAPTER=neon
+export DRIVER_ADAPTER_CONFIG='{"proxyUrl":"127.0.0.1:5488/v1"}'
+```
+
+### Relation Loading Strategies
+
+Test different relation loading strategies:
+
+<CodeGroup>
+```bash Join Strategy
+PRISMA_RELATION_LOAD_STRATEGY=join make dev-pg-qc
+PRISMA_RELATION_LOAD_STRATEGY=join make test-pg-qc
+```
+
+```bash Query Strategy
+PRISMA_RELATION_LOAD_STRATEGY=query make dev-pg-qc
+PRISMA_RELATION_LOAD_STRATEGY=query make test-pg-qc
+```
+</CodeGroup>
+
+## Database Management
+
+### Start All Databases
+
+```bash
+make all-dbs-up
+```
+
+### Stop All Databases
+
+```bash
+make all-dbs-down
+```
+
+### Start Specific Databases
+
+<CodeGroup>
+```bash PostgreSQL 13
+make start-postgres13
+```
+
+```bash PostgreSQL 15
+make start-postgres15
+```
+
+```bash MySQL 8
+make start-mysql_8
+```
+
+```bash MariaDB
+make start-mysql_mariadb
+```
+
+```bash SQL Server 2022
+make start-mssql_2022
+```
+
+```bash CockroachDB 23.1
+make start-cockroach_23_1
+```
+
+```bash MongoDB 5
+make start-mongodb_5
+```
+</CodeGroup>
+
+## Snapshot Testing with Insta
+
+Many tests use `insta` for snapshot assertions.
+
+### Install cargo-insta
+
+```bash
+cargo install cargo-insta
+```
+
+### Run Tests with Insta
+
+```bash
+# Run all tests and collect snapshots
+cargo insta test --package query-engine-tests
+
+# Review snapshots interactively
+cargo insta review
+
+# Accept all snapshots
+cargo insta accept
+
+# Reject all snapshots
+cargo insta reject
+```
+
+<Warning>
+  Don't blindly accept all snapshots! Always review changes carefully to ensure they match expected behavior.
+</Warning>
+
+## Test Environment Variables
+
+Key environment variables for testing:
+
+| Variable                    | Description                                      |
+| --------------------------- | ------------------------------------------------ |
+| `WORKSPACE_ROOT`            | Path to repository root                          |
+| `TEST_CONNECTOR`            | Connector to test (postgres, mysql, etc.)        |
+| `TEST_CONNECTOR_VERSION`    | Connector version (13, 8, etc.)                  |
+| `DRIVER_ADAPTER`            | Driver adapter name (pg, neon, planetscale)      |
+| `DRIVER_ADAPTER_CONFIG`     | JSON config for driver adapter                   |
+| `EXTERNAL_TEST_EXECUTOR`    | Path to test executor script                     |
+| `TEST_DATABASE_URL`         | Primary database connection string               |
+| `TEST_SHADOW_DATABASE_URL`  | Shadow database for migrations                   |
+| `LOG_LEVEL`                 | Logging level (trace, debug, info)               |
+| `RUST_LOG`                  | Rust logging filter                              |
+| `UPDATE_EXPECT`             | Set to `1` to update expect! snapshots           |
+| `SIMPLE_TEST_MODE`          | Reduces relation_link_test tests                 |
+| `RELATION_TEST_IDX`         | Run specific relation test by index              |
+
+## Benchmarking
+
+### Run Query Compiler Benchmarks
+
+<CodeGroup>
+```bash All Benchmarks
+make bench-qc
+```
+
+```bash Query Graph Benchmarks
+make bench-qc-graph
+```
+
+```bash Schema Benchmarks
+make bench-schema
+```
+</CodeGroup>
+
+### Save Benchmark Baseline
+
+```bash
+make bench-qc-baseline NAME=main
+```
+
+### Compare Against Baseline
+
+```bash
+make bench-qc-compare NAME=main
+```
+
+### Profile Query Compiler
+
+```bash
+make profile-qc
+```
+
+## Troubleshooting
+
+### Tests Skip with "Missing TEST_DATABASE_URL"
+
+Set the required environment variables or use the helper scripts:
+
+```bash
+source .test_database_urls/postgres
+```
+
+### expect! Snapshot Failures
+
+Update snapshots when output changes:
+
+```bash
+UPDATE_EXPECT=1 cargo test -p prisma-fmt
+```
+
+### Driver Adapter Build Fails
+
+Ensure `../prisma` repository is checked out:
+
+```bash
+cd ..
+git clone https://github.com/prisma/prisma.git
+cd prisma-engines
+make build-driver-adapters-kit-qc
+```
+
+### Tests Run Concurrently Causing Issues
+
+Use single-threaded execution:
+
+```bash
+cargo test -p query-engine-tests -- --test-threads 1
+# or
+make test-qe-st
+```
+
+## Next Steps
+
+- Learn about [debugging techniques](/development/debugging)
+- Review [contribution guidelines](/development/contributing)
+- Explore the [connector test kit README](https://github.com/prisma/prisma-engines/blob/main/query-engine/connector-test-kit-rs/README.md)

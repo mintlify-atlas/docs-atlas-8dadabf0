@@ -1,0 +1,434 @@
+---
+title: 'Parser Implementation'
+description: 'Schema parsing and Abstract Syntax Tree (AST)'
+---
+
+# Parser Implementation
+
+The PSL parser transforms Prisma schema text into a validated Abstract Syntax Tree (AST). This page covers the `schema-ast` crate and the parsing pipeline.
+
+## Schema AST Crate
+
+The `schema-ast` crate provides the foundation for all PSL operations:
+
+```toml
+[dependencies]
+diagnostics.workspace = true
+pest.workspace = true
+pest_derive.workspace = true
+serde.workspace = true
+```
+
+### Core Components
+
+#### Parser
+
+Built with the [Pest](https://pest.rs/) parser generator:
+
+```rust
+#[derive(pest_derive::Parser)]
+#[grammar = "parser/datamodel.pest"]
+pub(crate) struct PrismaDatamodelParser;
+```
+
+The parser is defined using PEG (Parsing Expression Grammar) in `datamodel.pest`.
+
+#### Source Files
+
+Wraps schema content with file information:
+
+```rust
+pub struct SourceFile {
+    content: String,
+    // Internal tracking
+}
+
+impl From<String> for SourceFile {
+    fn from(s: String) -> Self {
+        SourceFile::new(s)
+    }
+}
+```
+
+<Note>
+  `SourceFile` can represent content from files, strings, or stdin. It's designed to be lightweight and cloneable.
+</Note>
+
+#### Main API
+
+The primary parsing function:
+
+```rust
+use schema_ast::parse_schema;
+
+let ast = parse_schema(
+    schema_string,
+    &mut diagnostics,
+);
+```
+
+Key characteristics:
+- **Never fails** - Always returns an AST, even with errors
+- **Accumulates diagnostics** - Errors added to the diagnostics collection
+- **Source spans** - Every AST node tracks its location
+
+## AST Structure
+
+The AST faithfully represents Prisma Schema syntax with complete source span information.
+
+### Top-Level Items
+
+```rust
+pub struct SchemaAst {
+    /// All top-level items (models, enums, datasources, etc.)
+    pub tops: Vec<Top>,
+}
+
+pub enum Top {
+    Model(Model),
+    View(View),
+    CompositeType(CompositeType),
+    Enum(Enum),
+    Source(SourceConfig),
+    Generator(GeneratorConfig),
+}
+```
+
+### Models
+
+```rust
+pub struct Model {
+    pub name: Identifier,
+    pub fields: Vec<Field>,
+    pub attributes: Vec<Attribute>,
+    pub span: Span,
+    // ... other fields
+}
+```
+
+### Fields
+
+```rust
+pub struct Field {
+    pub name: Identifier,
+    pub field_type: FieldType,
+    pub arity: FieldArity,
+    pub attributes: Vec<Attribute>,
+    pub span: Span,
+    // ... other fields
+}
+
+pub enum FieldArity {
+    Required,
+    Optional,
+    List,
+}
+```
+
+### Attributes
+
+```rust
+pub struct Attribute {
+    pub name: Identifier,
+    pub arguments: ArgumentsList,
+    pub span: Span,
+}
+
+pub struct ArgumentsList {
+    pub arguments: Vec<Argument>,
+    // Can be empty, unnamed, or named
+}
+```
+
+### Expressions
+
+Schema expressions represent values:
+
+```rust
+pub enum Expression {
+    StringValue(String, Span),
+    NumericValue(String, Span),
+    BooleanValue(bool, Span),
+    ConstantValue(String, Span),
+    Function(String, Vec<Expression>, Span),
+    Array(Vec<Expression>, Span),
+}
+```
+
+## Parsing Modules
+
+The parser is organized into focused modules:
+
+- `parse_schema` - Top-level schema parsing
+- `parse_model` - Model blocks
+- `parse_view` - View blocks (read-only models)
+- `parse_field` - Field definitions
+- `parse_enum` - Enum types
+- `parse_composite_type` - Composite/embedded types
+- `parse_attribute` - Attributes (`@` and `@@`)
+- `parse_arguments` - Attribute arguments
+- `parse_expression` - Value expressions
+- `parse_types` - Type references
+- `parse_source_and_generator` - Configuration blocks
+- `parse_comments` - Comment preservation
+
+<Info>
+  Each parsing module follows a consistent pattern: convert Pest pairs into AST nodes while tracking spans and reporting errors.
+</Info>
+
+## Error Recovery
+
+The parser is designed for robust error recovery:
+
+1. **Continue on errors** - Parse as much as possible
+2. **Collect diagnostics** - Don't stop at first error
+3. **Meaningful spans** - Precise error locations
+4. **IDE-friendly** - Supports incremental parsing
+
+### Example Error Handling
+
+```rust
+let schema = r#"
+  model User {
+    id Int @id
+    email String @unique
+    // Missing field type
+    name @default("")
+  }
+"#;
+
+let mut diagnostics = Diagnostics::new();
+let ast = parse_schema(schema, &mut diagnostics);
+
+// AST is returned with partial information
+// diagnostics contains error about missing type
+assert!(diagnostics.has_errors());
+```
+
+## Multi-File Support
+
+PSL supports schemas split across multiple files:
+
+```rust
+let files = vec![
+    ("schema.prisma".to_string(), SourceFile::from(content1)),
+    ("models/user.prisma".to_string(), SourceFile::from(content2)),
+];
+
+let validated = parse_schema_multi_without_extensions(&files)?;
+```
+
+Each file is parsed independently, then merged during validation.
+
+## Reformatting
+
+The `reformat` module provides code formatting:
+
+```rust
+use schema_ast::reformat;
+
+let formatted = reformat(&schema_string, 2); // 2-space indent
+```
+
+### Formatting Features
+
+- **Consistent indentation** - Configurable tab size
+- **Preserves comments** - Maintains comment placement
+- **Idempotent** - Running twice produces same result
+- **Block alignment** - Aligns field types and attributes
+
+### Reformat Testing
+
+Reformatting tests are declarative:
+
+```
+tests/reformatter/
+  model.prisma           # Input
+  model.reformatted.prisma  # Expected output
+```
+
+```bash
+# Run reformat tests
+cargo test -p psl --test reformat_tests
+
+# Update expectations
+UPDATE_EXPECT=1 cargo test -p psl --test reformat_tests
+```
+
+## String Literals
+
+PSL string literals follow JSON string syntax:
+
+```rust
+use schema_ast::string_literal;
+
+let input = "hello\nworld";
+let literal = string_literal(input).to_string();
+// Returns: "\"hello\\nworld\""
+```
+
+Escaping rules:
+- `\t` - Tab
+- `\n` - Newline
+- `\r` - Carriage return
+- `\\` - Backslash
+- `\"` - Quote
+- `\uXXXX` - Unicode escape
+
+## Renderer
+
+The renderer converts AST back to schema text:
+
+```rust
+use schema_ast::renderer;
+
+let schema_text = renderer::render(&ast);
+```
+
+Used by:
+- The formatter
+- Code generation
+- Schema migrations
+
+<Note>
+  The renderer preserves semantic meaning but may not preserve exact formatting. Use `reformat()` for user-facing formatting.
+</Note>
+
+## Span Tracking
+
+Every AST node includes span information:
+
+```rust
+pub struct Span {
+    pub file: FileId,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl Span {
+    pub fn contains(&self, offset: usize) -> bool {
+        self.start <= offset && offset < self.end
+    }
+}
+```
+
+Spans enable:
+- **Precise error messages** with line/column
+- **IDE features** like go-to-definition
+- **Refactoring tools** with exact locations
+- **Syntax highlighting** in editors
+
+## Parser Performance
+
+The parser is optimized for IDE usage:
+
+- Fast incremental parsing
+- Minimal allocations
+- Efficient string interning in later phases
+- Streaming diagnostics
+
+<Info>
+  For large schemas, parsing typically takes less than 10ms. Validation is the more expensive phase.
+</Info>
+
+## Integration with Parser Database
+
+The AST feeds into the parser-database for semantic analysis:
+
+```rust
+use schema_ast::parse_schema;
+use parser_database::ParserDatabase;
+
+let mut diagnostics = Diagnostics::new();
+let ast = parse_schema(schema, &mut diagnostics);
+
+let db = ParserDatabase::new(
+    ast,
+    &mut diagnostics,
+    extension_types,
+);
+```
+
+See [Validation](/psl/validation) for details on the semantic analysis phase.
+
+## Testing
+
+Parser tests use standard Rust tests:
+
+```rust
+#[test]
+fn parse_model_with_fields() {
+    let schema = r#"
+      model User {
+        id    Int    @id
+        email String @unique
+      }
+    "#;
+    
+    let mut diag = Diagnostics::new();
+    let ast = parse_schema(schema, &mut diag);
+    
+    assert!(!diag.has_errors());
+    assert_eq!(ast.tops.len(), 1);
+}
+```
+
+### Running Parser Tests
+
+```bash
+# All parser tests
+cargo test -p schema-ast
+
+# Specific test
+cargo test -p schema-ast parse_model_with_fields
+
+# With output
+cargo test -p schema-ast -- --nocapture
+```
+
+## Common Patterns
+
+### Walking the AST
+
+```rust
+for top in &ast.tops {
+    match top {
+        Top::Model(model) => {
+            println!("Model: {}", model.name.name);
+            for field in &model.fields {
+                println!("  Field: {}", field.name.name);
+            }
+        }
+        Top::Enum(enum_) => {
+            println!("Enum: {}", enum_.name.name);
+        }
+        _ => {}
+    }
+}
+```
+
+### Finding Attributes
+
+```rust
+fn find_attribute<'a>(
+    attrs: &'a [Attribute],
+    name: &str,
+) -> Option<&'a Attribute> {
+    attrs.iter().find(|a| a.name.name == name)
+}
+
+if let Some(id_attr) = find_attribute(&field.attributes, "id") {
+    // Handle @id attribute
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Validation" icon="check" href="/psl/validation">
+    Learn about semantic validation with parser-database
+  </Card>
+  <Card title="Connectors" icon="database" href="/psl/connectors">
+    Explore database-specific validations
+  </Card>
+</CardGroup>

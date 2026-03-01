@@ -1,0 +1,347 @@
+---
+title: query-structure
+description: Core data structures for representing Prisma queries and data models
+---
+
+The `query-structure` crate provides fundamental types for working with Prisma data models, fields, filters, and query arguments. It serves as the foundation for query building and execution.
+
+## Overview
+
+This library defines the internal representation of Prisma schemas and query operations. It bridges the gap between the PSL (Prisma Schema Language) parser and the query execution layer.
+
+## Installation
+
+```toml
+[dependencies]
+query-structure = "0.0.0"
+```
+
+## Core Types
+
+### Model
+
+Represents a Prisma model in the internal data model.
+
+```rust
+pub type Model = crate::Zipper<ModelId>;
+```
+
+#### Methods
+
+```rust
+impl Model {
+    pub fn name(&self) -> &str
+    pub fn primary_identifier(&self) -> FieldSelection
+    pub fn fields(&self) -> Fields<'_>
+    pub fn db_name(&self) -> &str
+    pub fn is_view(&self) -> bool
+    pub fn supports_create_operation(&self) -> bool
+    pub fn has_unique_identifier(&self) -> bool
+}
+```
+
+<ParamField path="name" type="fn() -> &str">
+  Returns the model name as defined in the schema
+</ParamField>
+
+<ParamField path="primary_identifier" type="fn() -> FieldSelection">
+  Returns the fields used as the primary identifier for records
+</ParamField>
+
+<ParamField path="db_name" type="fn() -> &str">
+  Returns the database table/collection name for this model
+</ParamField>
+
+<ParamField path="is_view" type="fn() -> bool">
+  Returns true if this model is a database view
+</ParamField>
+
+### FieldSelection
+
+A selection of fields from a model.
+
+```rust
+pub struct FieldSelection {
+    selections: Vec<SelectedField>,
+}
+```
+
+#### Methods
+
+```rust
+impl FieldSelection {
+    pub fn new(selections: Vec<SelectedField>) -> Self
+    pub fn selections(&self) -> impl ExactSizeIterator<Item = &SelectedField> + '_
+    pub fn scalars(&self) -> impl Iterator<Item = &ScalarFieldRef> + '_
+    pub fn relations(&self) -> impl Iterator<Item = &RelationSelection>
+    pub fn contains(&self, name: &str) -> bool
+    pub fn is_superset_of(&self, other: &Self) -> bool
+    pub fn merge(self, other: FieldSelection) -> FieldSelection
+    pub fn union(selections: Vec<Self>) -> Self
+}
+```
+
+<ParamField path="selections" type="fn() -> Iterator">
+  Returns an iterator over all selected fields
+</ParamField>
+
+<ParamField path="scalars" type="fn() -> Iterator">
+  Returns an iterator over scalar field selections only
+</ParamField>
+
+<ParamField path="is_superset_of" type="fn(&Self) -> bool">
+  Checks if this selection contains all fields from another selection
+</ParamField>
+
+### SelectedField
+
+Represents a single selected field in a query.
+
+```rust
+pub enum SelectedField {
+    Scalar(ScalarFieldRef),
+    Composite(CompositeSelection),
+    Relation(RelationSelection),
+    Virtual(VirtualSelection),
+}
+```
+
+<ParamField path="Scalar" type="ScalarFieldRef">
+  A scalar field like String, Int, DateTime
+</ParamField>
+
+<ParamField path="Composite" type="CompositeSelection">
+  A composite type field with nested selections
+</ParamField>
+
+<ParamField path="Relation" type="RelationSelection">
+  A relation field with nested query arguments and selections
+</ParamField>
+
+<ParamField path="Virtual" type="VirtualSelection">
+  A virtual field like relation count aggregations
+</ParamField>
+
+### QueryArguments
+
+Defines constraints for querying data.
+
+```rust
+pub struct QueryArguments {
+    pub model: Model,
+    pub cursor: Option<SelectionResult>,
+    pub take: Take,
+    pub skip: Option<i64>,
+    pub filter: Option<Filter>,
+    pub order_by: Vec<OrderBy>,
+    pub distinct: Option<FieldSelection>,
+    pub ignore_skip: bool,
+    pub ignore_take: bool,
+    pub relation_load_strategy: Option<RelationLoadStrategy>,
+}
+```
+
+<ParamField path="model" type="Model">
+  The model being queried
+</ParamField>
+
+<ParamField path="cursor" type="Option<SelectionResult>">
+  Cursor position for pagination
+</ParamField>
+
+<ParamField path="take" type="Take">
+  Number of records to take (can be negative for reverse pagination)
+</ParamField>
+
+<ParamField path="skip" type="Option<i64>">
+  Number of records to skip
+</ParamField>
+
+<ParamField path="filter" type="Option<Filter>">
+  Filter conditions (WHERE clause)
+</ParamField>
+
+<ParamField path="order_by" type="Vec<OrderBy>">
+  Ordering specifications
+</ParamField>
+
+<ParamField path="distinct" type="Option<FieldSelection>">
+  Fields to apply DISTINCT on
+</ParamField>
+
+<ParamField path="relation_load_strategy" type="Option<RelationLoadStrategy>">
+  Strategy for loading relations (Join or Query)
+</ParamField>
+
+### Filter
+
+Represents query filter conditions.
+
+```rust
+pub enum Filter {
+    And(Vec<Filter>),
+    Or(Vec<Filter>),
+    Not(Vec<Filter>),
+    Scalar(ScalarFilter),
+    ScalarList(ScalarListFilter),
+    OneRelationIsNull(OneRelationIsNullFilter),
+    Relation(RelationFilter),
+    Composite(CompositeFilter),
+    BoolFilter(bool),
+    Aggregation(AggregationFilter),
+    Empty,
+}
+```
+
+#### Filter Constructors
+
+```rust
+impl Filter {
+    pub fn and(filters: Vec<Filter>) -> Self
+    pub fn or(filters: Vec<Filter>) -> Self
+    pub fn not(filters: Vec<Filter>) -> Self
+    pub fn empty() -> Self
+    pub fn size(&self) -> usize
+}
+```
+
+### RelationLoadStrategy
+
+Strategy for loading relation data.
+
+```rust
+pub enum RelationLoadStrategy {
+    Join,  // Use SQL JOINs
+    Query, // Use separate queries
+}
+```
+
+<ParamField path="Join" type="variant">
+  Load relations using SQL JOIN operations (more efficient, single query)
+</ParamField>
+
+<ParamField path="Query" type="variant">
+  Load relations using separate queries (application-level joins)
+</ParamField>
+
+### Take
+
+Represents the number of records to take in a query.
+
+```rust
+pub enum Take {
+    All,
+    One,
+    NegativeOne,
+    Some(i64),
+}
+```
+
+#### Methods
+
+```rust
+impl Take {
+    pub fn is_all(self) -> bool
+    pub fn is_some(self) -> bool
+    pub fn abs(self) -> Option<i64>
+    pub fn is_reversed(self) -> bool
+}
+```
+
+## Module Structure
+
+The crate is organized into several modules:
+
+- `model` - Model types and operations
+- `field` - Field types (scalar, composite, relation)
+- `field_selection` - Field selection types
+- `filter` - Filter condition types
+- `query_arguments` - Query argument types
+- `order_by` - Ordering specifications
+- `record` - Record and selection result types
+- `write_args` - Write operation arguments
+- `internal_data_model` - Internal representation of schema
+- `error` - Error types
+- `prelude` - Commonly used types
+
+## Re-exports
+
+The crate re-exports several useful types:
+
+```rust
+pub use prisma_value::*;  // PrismaValue types
+pub use psl::parser_database::walkers;  // Schema walkers
+pub use psl::schema_ast::ast::{self, FieldArity};
+```
+
+## Type Aliases
+
+```rust
+pub type Result<T> = std::result::Result<T, DomainError>;
+pub type ScalarFieldRef = crate::Zipper<ScalarFieldId>;
+pub type CompositeFieldRef = crate::Zipper<CompositeFieldId>;
+pub type RelationFieldRef = crate::Zipper<RelationFieldId>;
+```
+
+## Dependencies
+
+Key dependencies:
+
+- `psl` - Prisma Schema Language parser
+- `prisma-value` - Prisma value types
+- `itertools` - Iterator utilities
+- `bigdecimal` - Decimal number support
+- `chrono` - Date and time types
+
+## Examples
+
+### Creating a Field Selection
+
+```rust
+use query_structure::{FieldSelection, Model};
+
+let model: Model = /* get model */;
+let selection = model.primary_identifier();
+
+for field in selection.scalars() {
+    println!("Selected field: {}", field.name());
+}
+```
+
+### Building Query Arguments
+
+```rust
+use query_structure::{QueryArguments, Filter, Take};
+
+let args = QueryArguments {
+    model: my_model,
+    cursor: None,
+    take: Take::Some(10),
+    skip: Some(5),
+    filter: Some(Filter::empty()),
+    order_by: vec![],
+    distinct: None,
+    ignore_skip: false,
+    ignore_take: false,
+    relation_load_strategy: Some(RelationLoadStrategy::Join),
+};
+```
+
+### Working with Filters
+
+```rust
+use query_structure::Filter;
+
+let filter = Filter::and(vec![
+    /* scalar filters */
+]);
+
+if filter.size() > 0 {
+    // Apply filter
+}
+```
+
+## Related
+
+- [query-compiler](/api/query-compiler) - Compiles queries using these structures
+- [psl-core](/api/psl-core) - Schema parsing and validation

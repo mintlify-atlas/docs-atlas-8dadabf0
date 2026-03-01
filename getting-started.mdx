@@ -1,0 +1,605 @@
+---
+title: 'Getting Started'
+description: 'Build and run Prisma Engines locally for development'
+---
+
+## Prerequisites
+
+Before building Prisma Engines, ensure you have the following installed:
+
+<AccordionGroup>
+  <Accordion title="Rust Toolchain" icon="rust">
+    Install the latest stable Rust version:
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+    
+    Or use your package manager:
+    
+    ```bash
+    # macOS
+    brew install rust
+    
+    # Arch Linux
+    pacman -S rust
+    ```
+  </Accordion>
+  
+  <Accordion title="OpenSSL (Linux only)" icon="lock">
+    Required for database connections on Linux:
+    
+    ```bash
+    # Ubuntu/Debian
+    sudo apt-get install libssl-dev pkg-config
+    
+    # Fedora
+    sudo dnf install openssl-devel
+    
+    # Arch Linux
+    sudo pacman -S openssl
+    ```
+  </Accordion>
+  
+  <Accordion title="direnv" icon="folder-tree">
+    Recommended for managing environment variables:
+    
+    ```bash
+    # macOS
+    brew install direnv
+    
+    # Ubuntu/Debian
+    sudo apt-get install direnv
+    ```
+    
+    After installation, hook direnv into your shell by adding to `~/.bashrc` or `~/.zshrc`:
+    
+    ```bash
+    eval "$(direnv hook bash)"  # for bash
+    eval "$(direnv hook zsh)"   # for zsh
+    ```
+  </Accordion>
+  
+  <Accordion title="Docker (for databases)" icon="docker">
+    Required for running test databases:
+    
+    ```bash
+    # macOS
+    brew install --cask docker
+    
+    # Ubuntu/Debian (install Docker Engine)
+    curl -fsSL https://get.docker.com -o get-docker.sh
+    sudo sh get-docker.sh
+    ```
+  </Accordion>
+  
+  <Accordion title="Node.js & pnpm (for driver adapters)" icon="node">
+    Required for building driver adapters and running query compiler tests:
+    
+    ```bash
+    # Install Node.js 20+ (using nvm)
+    nvm install 20
+    nvm use 20
+    
+    # Install pnpm
+    npm install -g pnpm
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  **Nix users:** If you use Nix, simply run `direnv allow` in the repository root. The included `shell.nix` provides all dependencies.
+</Note>
+
+## Clone the Repository
+
+Clone the prisma-engines repository:
+
+```bash
+git clone https://github.com/prisma/prisma-engines.git
+cd prisma-engines
+```
+
+If using direnv:
+
+```bash
+direnv allow
+```
+
+This loads environment variables from `.envrc` automatically.
+
+## Building the Engines
+
+Prisma Engines uses Cargo's workspace feature to manage multiple crates.
+
+### Build All Engines (Debug)
+
+```bash
+cargo build
+```
+
+This builds all engines in debug mode. Binaries are located in `target/debug/`:
+
+| Engine | Binary Path |
+|--------|-------------|
+| Schema Engine | `target/debug/schema-engine` |
+| Prisma Format | `target/debug/prisma-fmt` |
+
+### Build All Engines (Release)
+
+For optimized production builds:
+
+```bash
+cargo build --release
+```
+
+Release binaries are in `target/release/`:
+
+| Engine | Binary Path |
+|--------|-------------|
+| Schema Engine | `target/release/schema-engine` |
+| Prisma Format | `target/release/prisma-fmt` |
+
+<Warning>
+  Release builds are significantly slower to compile but produce much faster binaries. Use debug builds during development.
+</Warning>
+
+### Build Query Compiler WebAssembly
+
+The query compiler compiles to WebAssembly for use in Prisma Client:
+
+```bash
+make build-qc-wasm
+```
+
+This produces WebAssembly bundles in `query-compiler/query-compiler-wasm/pkg/`.
+
+### Build Driver Adapters Kit
+
+To build the driver adapters with query compiler integration:
+
+```bash
+make build-driver-adapters-kit-qc
+```
+
+This builds both the query compiler WebAssembly and the TypeScript driver adapter code.
+
+## Running Tests
+
+Prisma Engines has comprehensive test suites. Tests are organized into unit tests and integration tests.
+
+### Unit Tests
+
+Run unit tests for the entire workspace:
+
+```bash
+make test-unit
+```
+
+Or run tests for a specific crate:
+
+```bash
+# PSL tests
+cargo test -p psl -F all
+
+# Prisma Format tests
+cargo test -p prisma-fmt -F psl/all
+
+# Query Compiler tests
+cargo test -p query-compiler
+```
+
+<Note>
+  Use `UPDATE_EXPECT=1` before the command to regenerate snapshot expectations when diagnostics or output changes:
+  
+  ```bash
+  UPDATE_EXPECT=1 cargo test -p prisma-fmt
+  ```
+</Note>
+
+### Integration Tests
+
+Integration tests require running databases. Use the provided Makefile helpers:
+
+#### Set Up PostgreSQL
+
+```bash
+# Start PostgreSQL 15 container and configure tests
+make dev-postgres15
+
+# Or with query compiler/driver adapters
+make dev-pg-qc
+```
+
+This:
+1. Starts a PostgreSQL container via docker-compose
+2. Builds query compiler WebAssembly
+3. Builds driver adapters
+4. Writes `.test_config` file
+
+#### Set Up Other Databases
+
+Available database helpers:
+
+```bash
+make dev-mysql8          # MySQL 8
+make dev-mariadb-qc      # MariaDB with QC
+make dev-mssql-qc        # SQL Server with QC
+make dev-planetscale-qc  # PlanetScale adapter
+make dev-libsql-qc       # libSQL/Turso
+make dev-neon-qc         # Neon serverless
+make dev-d1-qc           # Cloudflare D1
+```
+
+<Tip>
+  The `*-qc` variants build driver adapters automatically. Use non-`*-qc` variants (like `make dev-postgres15`) if you only need a database without driver adapters.
+</Tip>
+
+### Run Query Engine Tests
+
+After setting up a database:
+
+```bash
+cargo test -p query-engine-tests -- --nocapture
+```
+
+Or use the Makefile:
+
+```bash
+make test-qe           # Minimal output
+make test-qe-verbose   # Full logging
+```
+
+To test with a specific driver adapter:
+
+```bash
+DRIVER_ADAPTER=pg make test-qe
+DRIVER_ADAPTER=neon make test-qe
+```
+
+### Run Schema Engine Tests
+
+Schema engine tests require database environment variables:
+
+```bash
+# Load PostgreSQL test database URLs
+source .test_database_urls/postgres
+
+# Run migration tests
+cargo test -p sql-migration-tests -- --nocapture
+
+# Run introspection tests
+cargo test -p sql-introspection-tests -- --nocapture
+```
+
+## Development Workflow
+
+Here's a typical development workflow:
+
+<Steps>
+  <Step title="Set up your environment">
+    ```bash
+    cd prisma-engines
+    direnv allow
+    ```
+  </Step>
+  
+  <Step title="Start a database">
+    ```bash
+    make dev-pg-qc  # PostgreSQL with query compiler
+    ```
+  </Step>
+  
+  <Step title="Make your changes">
+    Edit source files in your preferred editor. Consider using rust-analyzer for IDE features.
+  </Step>
+  
+  <Step title="Build your changes">
+    ```bash
+    cargo build
+    ```
+  </Step>
+  
+  <Step title="Run relevant tests">
+    ```bash
+    # Run specific test
+    cargo test -p query-compiler my_test_name -- --nocapture
+    
+    # Or run full test suite
+    make test-qe
+    ```
+  </Step>
+  
+  <Step title="Update snapshots if needed">
+    ```bash
+    UPDATE_EXPECT=1 cargo test -p query-compiler
+    cargo insta review  # If using cargo-insta
+    ```
+  </Step>
+  
+  <Step title="Lint and format">
+    ```bash
+    make pedantic  # Runs clippy and rustfmt
+    ```
+  </Step>
+</Steps>
+
+## Debugging
+
+Useful debugging techniques:
+
+### Enable Logging
+
+Control log levels with the `RUST_LOG` environment variable:
+
+```bash
+# All logs
+export RUST_LOG=debug
+
+# Specific crate
+export RUST_LOG=query_core=debug
+
+# Multiple crates
+export RUST_LOG=query_core=debug,sql_query_builder=trace
+```
+
+See [env_logger documentation](https://docs.rs/env_logger/latest/env_logger/#enabling-logging) for more options.
+
+### Use Debug Macros
+
+Add debug output in your code:
+
+```rust
+// Print debug information
+dbg!(&my_variable);
+
+// Conditional debugging
+if cfg!(debug_assertions) {
+    eprintln!("Debug info: {:?}", value);
+}
+```
+
+### Language Server
+
+Use rust-analyzer for:
+- Go to definition
+- Type information
+- Inline errors
+- Code navigation
+
+Install in VS Code via the "rust-analyzer" extension.
+
+### Avoid Build Lock Contention
+
+If rust-analyzer locks your builds, configure it to use a separate target directory.
+
+In VS Code settings (`settings.json`):
+
+```json
+{
+  "rust-analyzer.check.extraArgs": [
+    "--target-dir=/tmp/rust-analyzer-check"
+  ]
+}
+```
+
+## Testing Driver Adapters
+
+When working on features spanning both query compiler and driver adapters:
+
+<Steps>
+  <Step title="Clone sibling repository">
+    Clone `prisma/prisma` next to `prisma-engines`:
+    
+    ```bash
+    cd ..
+    git clone https://github.com/prisma/prisma.git
+    cd prisma-engines
+    ```
+  </Step>
+  
+  <Step title="Create feature branches">
+    Create branches in both repositories:
+    
+    ```bash
+    # In prisma-engines
+    git checkout -b feature/my-feature
+    
+    # In ../prisma
+    cd ../prisma
+    git checkout -b feature/my-feature
+    cd ../prisma-engines
+    ```
+  </Step>
+  
+  <Step title="Make changes">
+    Edit query compiler code in `prisma-engines` and driver adapter code in `prisma/packages/adapter-*`.
+  </Step>
+  
+  <Step title="Test locally">
+    ```bash
+    DRIVER_ADAPTER=pg make test-qe
+    ```
+    
+    This automatically uses driver adapters from your local `../prisma` clone.
+  </Step>
+  
+  <Step title="Configure CI integration">
+    Add to your PR description in `prisma-engines`:
+    
+    ```
+    /prisma-branch feature/my-feature
+    ```
+    
+    GitHub Actions will use that branch from `prisma/prisma` for CI tests.
+  </Step>
+  
+  <Step title="Merge order">
+    1. Merge `prisma/prisma` PR first
+    2. Then merge `prisma-engines` PR
+  </Step>
+</Steps>
+
+<Warning>
+  The `/prisma-branch` tag is required for CI to test your cross-repository changes. Without it, CI uses the `main` branch of `prisma/prisma`, which won't include your adapter changes.
+</Warning>
+
+## Integration Releases
+
+Test your changes in the full Prisma ecosystem:
+
+### Automatic Integration Releases
+
+Branches starting with `integration/` automatically trigger:
+
+1. Full test suite in `prisma-engines`
+2. Build and upload engines to S3 & R2
+3. Trigger `@prisma/engines-wrapper` release
+4. Create integration PR in `prisma/prisma`
+5. Publish all Prisma packages to npm with `integration` tag
+6. Run ecosystem tests
+
+```bash
+git checkout -b integration/my-feature
+git push origin integration/my-feature
+```
+
+### Manual Integration Releases
+
+Add `[integration]` to any commit message:
+
+```bash
+git commit -m "feat: new feature [integration]"
+git push
+```
+
+<Note>
+  Integration releases take ~1h20m to complete end-to-end but are fully automated. Monitor both `prisma/prisma-engines` and `prisma/prisma` workflows.
+</Note>
+
+## Binary Locations
+
+After building, binaries are located at:
+
+### Debug Builds
+
+```
+target/debug/
+├── schema-engine       # Schema Engine CLI
+├── prisma-fmt          # Prisma Format
+└── ...                 # Other workspace binaries
+```
+
+### Release Builds
+
+```
+target/release/
+├── schema-engine       # Optimized Schema Engine
+├── prisma-fmt          # Optimized Prisma Format
+└── ...                 # Other workspace binaries
+```
+
+### WebAssembly Artifacts
+
+```
+query-compiler/query-compiler-wasm/pkg/
+├── query_compiler_wasm.js
+├── query_compiler_wasm_bg.wasm
+└── query_compiler_wasm.d.ts
+```
+
+## Using Local Engines with Prisma
+
+To use your locally built engines with Prisma Client:
+
+### Set Environment Variables
+
+```bash
+export PRISMA_QUERY_ENGINE_BINARY=/path/to/prisma-engines/target/debug/query-engine
+export PRISMA_SCHEMA_ENGINE_BINARY=/path/to/prisma-engines/target/debug/schema-engine
+export PRISMA_FMT_BINARY=/path/to/prisma-engines/target/debug/prisma-fmt
+```
+
+Then run Prisma CLI commands normally:
+
+```bash
+npx prisma migrate dev
+npx prisma generate
+```
+
+<Tip>
+  Add these exports to your shell profile or use direnv in your Prisma project to automatically load local engine binaries during development.
+</Tip>
+
+## Common Issues
+
+<AccordionGroup>
+  <Accordion title="Missing TEST_DATABASE_URL error">
+    Integration tests require database URLs:
+    
+    ```bash
+    # Use Makefile helper
+    make dev-postgres15
+    
+    # Or set manually
+    export TEST_DATABASE_URL="postgresql://postgres:prisma@localhost:5432/tests"
+    ```
+  </Accordion>
+  
+  <Accordion title="Snapshot test failures">
+    Regenerate snapshots when intentionally changing output:
+    
+    ```bash
+    UPDATE_EXPECT=1 cargo test -p prisma-fmt
+    ```
+    
+    Review changes carefully before committing.
+  </Accordion>
+  
+  <Accordion title="Cargo build locks">
+    rust-analyzer can lock the build directory. Configure a separate target directory (see Debugging section).
+  </Accordion>
+  
+  <Accordion title="OpenSSL errors on Linux">
+    Install OpenSSL development packages:
+    
+    ```bash
+    sudo apt-get install libssl-dev pkg-config
+    ```
+  </Accordion>
+  
+  <Accordion title="WebAssembly build fails">
+    Install wasm-pack:
+    
+    ```bash
+    cargo install wasm-pack
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Architecture Deep Dive" icon="sitemap" href="/architecture">
+    Learn about the internal architecture and how components interact
+  </Card>
+  
+  <Card title="Development Guide" icon="code" href="/development/building">
+    Build, test, and contribute to the engines
+  </Card>
+  
+  <Card title="API Documentation" icon="book" href="https://prisma.github.io/prisma-engines/">
+    Browse the complete API documentation
+  </Card>
+  
+  <Card title="Contributing" icon="github" href="https://github.com/prisma/prisma-engines/blob/main/CONTRIBUTING.md">
+    Learn how to contribute to Prisma Engines
+  </Card>
+</CardGroup>
+
+## Additional Resources
+
+- [Prisma Documentation](https://www.prisma.io/docs) - User-facing documentation
+- [Rust Book](https://doc.rust-lang.org/book/) - Learn Rust programming
+- [Cargo Guide](https://doc.rust-lang.org/cargo/) - Cargo package manager
+- [GitHub Actions Workflows](https://github.com/prisma/prisma-engines/tree/main/.github/workflows) - CI/CD configuration

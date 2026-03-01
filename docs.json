@@ -1,122 +1,112 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Prisma Engines",
+  "theme": "aspen",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#5A67D8",
+    "light": "#818CF8",
+    "dark": "#4C51BF"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/prisma/prisma-engines"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/prisma/prisma-engines"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Overview",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "architecture",
+              "getting-started"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Components",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "components/query-compiler",
+              "components/schema-engine",
+              "components/psl",
+              "components/prisma-fmt"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Query Compiler",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "query-compiler/overview",
+              "query-compiler/driver-adapters",
+              "query-compiler/query-planning",
+              "query-compiler/wasm-build"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Schema Engine",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "schema-engine/overview",
+              "schema-engine/migrations",
+              "schema-engine/introspection",
+              "schema-engine/diffing"
+            ]
+          },
+          {
+            "group": "Prisma Schema Language",
+            "pages": [
+              "psl/overview",
+              "psl/parser",
+              "psl/validation",
+              "psl/connectors"
+            ]
+          },
+          {
+            "group": "Development",
+            "pages": [
+              "development/building",
+              "development/testing",
+              "development/debugging",
+              "development/contributing"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Libraries",
             "pages": [
-              "api-reference/introduction"
+              "api/query-compiler",
+              "api/query-structure",
+              "api/schema-core",
+              "api/psl-core"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Binaries",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/schema-engine-cli",
+              "api/prisma-fmt"
+            ]
+          },
+          {
+            "group": "Connectors",
+            "pages": [
+              "api/connectors/overview",
+              "api/connectors/sql",
+              "api/connectors/mongodb"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

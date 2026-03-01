@@ -1,0 +1,504 @@
+---
+title: Building the WASM Module
+description: Build the Query Compiler for WebAssembly targets
+---
+
+The Query Compiler can be compiled to WebAssembly for browser and edge runtime environments (Cloudflare Workers, Vercel Edge Functions, etc.).
+
+## Build Script
+
+The `build.sh` script handles the entire WASM build process:
+
+```bash
+cd query-compiler/query-compiler-wasm
+./build.sh <version> <output_folder> <optimization_mode>
+```
+
+### Parameters
+
+- **version**: NPM package version (e.g., `0.0.0`)
+- **output_folder**: Where to place the built artifacts (defaults to `query-compiler/query-compiler-wasm/pkg`)
+- **optimization_mode**: Either `fast` or `small`
+
+### Example Usage
+
+<CodeGroup>
+```bash Fast Build (Development)
+./build.sh 0.0.0 pkg fast
+```
+
+```bash Small Build (Production)
+./build.sh 0.0.0 pkg small
+```
+</CodeGroup>
+
+## Makefile Targets
+
+The root Makefile provides convenient targets:
+
+<Tabs>
+  <Tab title="Build All">
+    Build both optimization modes:
+
+    ```bash
+    make build-qc-wasm
+    ```
+
+    Equivalent to:
+
+    ```bash
+    make build-qc-wasm-fast
+    make build-qc-wasm-small
+    ```
+  </Tab>
+
+  <Tab title="Build Fast">
+    Build with `-O4` optimizations for faster execution:
+
+    ```bash
+    make build-qc-wasm-fast
+    ```
+
+    Uses environment variables:
+    - `QE_WASM_VERSION`: Version number (defaults to `0.0.0`)
+  </Tab>
+
+  <Tab title="Build Small">
+    Build with `-Os` optimizations for smaller file size:
+
+    ```bash
+    make build-qc-wasm-small
+    ```
+  </Tab>
+
+  <Tab title="Build + Gzip">
+    Build and create gzipped versions:
+
+    ```bash
+    make build-qc-gz
+    ```
+
+    This builds both modes and compresses each provider's WASM file.
+  </Tab>
+</Tabs>
+
+From the `Makefile`:
+
+```makefile
+build-qc-wasm-%:
+	cd query-compiler/query-compiler-wasm && \
+	./build.sh $(QE_WASM_VERSION) query-compiler/query-compiler-wasm/pkg $*
+
+build-qc-wasm: build-qc-wasm-fast build-qc-wasm-small
+
+build-qc-gz-%: build-qc-wasm-%
+	@cd query-compiler/query-compiler-wasm/pkg && \
+    for provider in postgresql mysql sqlite sqlserver cockroachdb; do \
+        gzip -knc $$provider/query_compiler_$*_bg.wasm > $${provider}_$*.gz; \
+    done;
+
+build-qc-gz: build-qc-gz-fast build-qc-gz-small
+```
+
+## Build Process
+
+The build happens in multiple stages:
+
+<Steps>
+  <Step title="Compile to WASM">
+    Compile the Rust code to WebAssembly:
+
+    ```bash
+    cargo build \
+      -p query-compiler-wasm \
+      --profile release \
+      --features "postgresql" \
+      --target wasm32-unknown-unknown
+    ```
+
+    This runs for each provider: `postgresql`, `mysql`, `sqlite`, `sqlserver`, `cockroachdb`
+  </Step>
+
+  <Step title="Generate JS Bindings">
+    Use `wasm-bindgen` to create TypeScript/JavaScript bindings:
+
+    ```bash
+    wasm-bindgen \
+      --target bundler \
+      --out-name "query_compiler_fast" \
+      --out-dir "pkg/postgresql" \
+      "target/wasm32-unknown-unknown/release/query_compiler_wasm.wasm"
+    ```
+
+    Generates:
+    - `query_compiler_fast.js`
+    - `query_compiler_fast.d.ts`
+    - `query_compiler_fast_bg.wasm`
+  </Step>
+
+  <Step title="Optimize with wasm-opt">
+    Apply aggressive optimizations:
+
+    ```bash
+    wasm-opt \
+      -O4 \
+      --vacuum \
+      --duplicate-function-elimination \
+      --duplicate-import-elimination \
+      --remove-unused-module-elements \
+      --dae-optimizing \
+      --remove-unused-names \
+      --rse \
+      --gsi \
+      --gufa-optimizing \
+      --strip-dwarf \
+      --strip-producers \
+      --strip-target-features \
+      --strip-debug \
+      "query_compiler_fast_bg.wasm" \
+      -o "query_compiler_fast_bg.wasm"
+    ```
+  </Step>
+
+  <Step title="Generate package.json">
+    Create an NPM package descriptor:
+
+    ```bash
+    jq '.version=$version' --arg version "0.0.0" package.json > pkg/package.json
+    ```
+  </Step>
+
+  <Step title="Report Sizes">
+    Display the final sizes:
+
+    ```
+    postgresql:
+    ℹ️  raw: 1.2M pkg/postgresql/query_compiler_fast_bg.wasm
+    ℹ️  zip: 389234 bytes (380.1KiB)
+    ```
+  </Step>
+</Steps>
+
+## wasm-opt Flags
+
+The script uses extensive optimization flags:
+
+| Flag | Purpose |
+|------|--------|
+| `-O4` / `-Os` | Optimization level (speed vs size) |
+| `--vacuum` | Remove obviously unneeded code |
+| `--duplicate-function-elimination` | Deduplicate identical functions |
+| `--duplicate-import-elimination` | Deduplicate imports |
+| `--remove-unused-module-elements` | Strip unused exports |
+| `--dae-optimizing` | Dead argument elimination |
+| `--remove-unused-names` | Remove unreferenced names |
+| `--rse` | Redundant local.set elimination |
+| `--gsi` | Global struct inference |
+| `--gufa-optimizing` | Type monomorphization |
+| `--strip-dwarf` | Remove debug info |
+| `--strip-producers` | Remove producers section |
+| `--strip-target-features` | Remove target features |
+
+From `query-compiler-wasm/build.sh`:
+
+```bash
+WASM_OPT_ARGS=(
+    "$([[ "$OPT_MODE" == "fast" ]] && echo "-O4" || echo "-Os")"
+    "--vacuum"
+    "--duplicate-function-elimination"
+    "--duplicate-import-elimination"
+    "--remove-unused-module-elements"
+    "--dae-optimizing"
+    "--remove-unused-names"
+    "--rse"
+    "--gsi"
+    "--gufa-optimizing"
+    "--strip-dwarf"
+    "--strip-producers"
+    "--strip-target-features"
+)
+```
+
+## Build Profiles
+
+The build can use different Cargo profiles:
+
+<Tabs>
+  <Tab title="Dev (Local)">
+    Default when building locally:
+
+    ```bash
+    WASM_BUILD_PROFILE=dev ./build.sh 0.0.0 pkg fast
+    ```
+
+    - Faster compilation
+    - Larger artifacts
+    - Skips `wasm-opt` entirely
+  </Tab>
+
+  <Tab title="Release (CI)">
+    Default in GitHub Actions:
+
+    ```bash
+    WASM_BUILD_PROFILE=release ./build.sh 0.0.0 pkg fast
+    ```
+
+    - Full optimizations
+    - Strips debug symbols with `--strip-debug`
+  </Tab>
+
+  <Tab title="Profiling">
+    For performance analysis:
+
+    ```bash
+    WASM_BUILD_PROFILE=profiling ./build.sh 0.0.0 pkg fast
+    ```
+
+    - Optimizations enabled
+    - Keeps debug symbols with `--debuginfo`
+  </Tab>
+</Tabs>
+
+## Cargo Configuration
+
+From `query-compiler-wasm/Cargo.toml`:
+
+```toml
+[package]
+name = "query-compiler-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+doc = false
+crate-type = ["cdylib"]
+name = "query_compiler_wasm"
+
+[dependencies]
+query-compiler.workspace = true
+query-core.workspace = true
+schema.workspace = true
+psl.workspace = true
+quaint.workspace = true
+
+wasm-bindgen.workspace = true
+tsify.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[features]
+sqlite = ["psl/sqlite", "query-compiler/sqlite"]
+postgresql = ["psl/postgresql", "query-compiler/postgresql"]
+mysql = ["psl/mysql", "query-compiler/mysql"]
+mssql = ["psl/mssql", "query-compiler/mssql"]
+cockroachdb = ["psl/cockroachdb", "query-compiler/cockroachdb", "postgresql"]
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false  # use wasm-opt explicitly in ./build.sh
+```
+
+## Output Structure
+
+After building, the output directory contains:
+
+```
+pkg/
+├── package.json
+├── postgresql/
+│   ├── query_compiler_fast.js
+│   ├── query_compiler_fast.d.ts
+│   ├── query_compiler_fast_bg.wasm
+│   ├── query_compiler_small.js
+│   ├── query_compiler_small.d.ts
+│   └── query_compiler_small_bg.wasm
+├── mysql/
+│   └── ...
+├── sqlite/
+│   └── ...
+├── sqlserver/
+│   └── ...
+└── cockroachdb/
+    └── ...
+```
+
+Each provider gets its own subdirectory with separate WASM builds.
+
+## TypeScript Usage
+
+Once built, import and use the WASM module:
+
+```typescript
+import { QueryCompiler } from './pkg/postgresql/query_compiler_fast.js'
+
+const compiler = new QueryCompiler({
+  datamodel: `
+    model User {
+      id    Int     @id @default(autoincrement())
+      email String  @unique
+      name  String?
+    }
+  `,
+  provider: 'postgresql',
+  connection_info: {
+    supports_relation_joins: true,
+  },
+})
+
+const plan = compiler.compile(JSON.stringify({
+  modelName: 'User',
+  action: 'findMany',
+  query: {
+    selection: { $scalars: true },
+  },
+}))
+
+console.log(plan)
+```
+
+## Measuring Sizes
+
+Measure the final artifact sizes:
+
+```bash
+make measure-qc-wasm
+```
+
+Outputs to stdout:
+
+```
+postgresql_fast_qc_size=1234567
+postgresql_fast_qc_size_gz=389234
+mysql_fast_qc_size=1198765
+mysql_fast_qc_size_gz=378912
+...
+```
+
+From the `Makefile`:
+
+```makefile
+measure-qc-wasm-%: build-qc-gz-%
+	@cd query-compiler/query-compiler-wasm/pkg; \
+	for provider in postgresql mysql sqlite sqlserver cockroachdb; do \
+		echo "$${provider}_$*_qc_size=$$(cat $$provider/query_compiler_$*_bg.wasm | wc -c | tr -d ' ')" >> $(ENGINE_SIZE_OUTPUT); \
+		echo "$${provider}_$*_qc_size_gz=$$(cat $${provider}_$*.gz | wc -c | tr -d ' ')" >> $(ENGINE_SIZE_OUTPUT); \
+	done;
+```
+
+## Cleaning Build Artifacts
+
+Clean the WASM build directory:
+
+```bash
+make clean-qc-wasm
+```
+
+This removes everything in `query-compiler/query-compiler-wasm/pkg/` except `README.md`.
+
+```makefile
+clean-qc-wasm:
+	@echo "Cleaning query-compiler/query-compiler-wasm/pkg" && \
+	cd query-compiler/query-compiler-wasm/pkg && find . ! -name '.' ! -name '..' ! -name 'README.md' -exec rm -rf {} +
+```
+
+## Optional Tools
+
+### wasm2wat
+
+Convert WASM to WebAssembly Text Format for inspection:
+
+```bash
+wasm2wat pkg/postgresql/query_compiler_fast_bg.wasm -o query_compiler.postgresql.wat
+```
+
+The build script automatically generates `.wat` files if `wasm2wat` is installed.
+
+### Graphviz
+
+Render query graphs as PNG:
+
+```bash
+export RENDER_DOT_TO_PNG=1
+cargo test -p query-compiler
+```
+
+Requires `dot` (from Graphviz) to be installed.
+
+## CI Integration
+
+In GitHub Actions:
+
+```yaml
+- name: Install wasm-pack
+  run: curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+
+- name: Install wasm-opt
+  run: |
+    wget https://github.com/WebAssembly/binaryen/releases/download/version_116/binaryen-version_116-x86_64-linux.tar.gz
+    tar -xzf binaryen-version_116-x86_64-linux.tar.gz
+    sudo cp binaryen-version_116/bin/wasm-opt /usr/local/bin/
+
+- name: Build WASM
+  run: make build-qc-wasm
+  env:
+    QE_WASM_VERSION: ${{ github.sha }}
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="wasm-opt not found">
+    Install Binaryen:
+
+    ```bash
+    # macOS
+    brew install binaryen
+
+    # Ubuntu/Debian
+    apt-get install binaryen
+
+    # From source
+    git clone https://github.com/WebAssembly/binaryen
+    cd binaryen
+    cmake . && make
+    sudo make install
+    ```
+  </Accordion>
+
+  <Accordion title="Out of memory during wasm-opt">
+    The `-O4` and `--gufa-optimizing` flags are memory-intensive. Options:
+
+    - Use `small` mode instead of `fast`
+    - Increase available memory
+    - Disable specific optimization passes
+  </Accordion>
+
+  <Accordion title="Build fails with missing features">
+    Ensure the provider feature is enabled:
+
+    ```bash
+    cargo build -p query-compiler-wasm --features postgresql --target wasm32-unknown-unknown
+    ```
+
+    The build script handles this automatically.
+  </Accordion>
+
+  <Accordion title="wasm-bindgen version mismatch">
+    The `wasm-bindgen` CLI version must match the crate version. Check `Cargo.lock` for the exact version and install:
+
+    ```bash
+    cargo install wasm-bindgen-cli --version 0.2.XX
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Overview" icon="book" href="/query-compiler/overview">
+    Return to architecture overview
+  </Card>
+
+  <Card title="Driver Adapters" icon="plug" href="/query-compiler/driver-adapters">
+    Learn about driver adapters for query execution
+  </Card>
+</CardGroup>

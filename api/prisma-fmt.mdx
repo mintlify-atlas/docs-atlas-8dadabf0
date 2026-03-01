@@ -1,0 +1,372 @@
+---
+title: Prisma Format CLI
+description: Command-line interface for the prisma-fmt formatter and language server
+---
+
+The **prisma-fmt** binary provides formatting and language server protocol (LSP) features for Prisma schema files. It's used by editor extensions and the Prisma CLI.
+
+## Binary Location
+
+After building:
+
+```bash
+./target/debug/prisma-fmt       # Debug build
+./target/release/prisma-fmt     # Release build
+```
+
+## Command Line Interface
+
+The prisma-fmt binary supports multiple modes:
+
+```bash
+prisma-fmt <SUBCOMMAND>
+```
+
+### format
+
+Format a Prisma schema file:
+
+```bash
+prisma-fmt format --input schema.prisma --output formatted.prisma
+```
+
+<ParamField path="--input" type="path">
+  Input file to format. If not specified, reads from stdin.
+</ParamField>
+
+<ParamField path="--output" type="path">
+  Output file for formatted content. If not specified, writes to stdout.
+</ParamField>
+
+<ParamField path="--tabwidth" type="number" default="2">
+  Number of spaces for indentation
+</ParamField>
+
+**Example:**
+
+```bash
+# Format from file
+prisma-fmt format -i schema.prisma -o schema.prisma
+
+# Format from stdin
+cat schema.prisma | prisma-fmt format
+
+# Custom tab width
+prisma-fmt format -i schema.prisma -s 4
+```
+
+### native-types
+
+Get available native types for database connectors:
+
+```bash
+cat schema.prisma | prisma-fmt native-types
+```
+
+**Output:** JSON array of available native types for the datasource provider:
+
+```json
+[
+  {
+    "name": "Text",
+    "_number_of_args": 0,
+    "_number_of_optional_args": 0,
+    "prisma_type": "String"
+  },
+  {
+    "name": "VarChar",
+    "_number_of_args": 1,
+    "_number_of_optional_args": 0,
+    "prisma_type": "String"
+  }
+]
+```
+
+### referential-actions
+
+Get available referential actions for the datasource:
+
+```bash
+cat schema.prisma | prisma-fmt referential-actions
+```
+
+**Output:** JSON array of supported referential actions:
+
+```json
+["Cascade", "Restrict", "NoAction", "SetNull", "SetDefault"]
+```
+
+### preview-features
+
+List all available preview features:
+
+```bash
+prisma-fmt preview-features
+```
+
+**Output:** JSON array of preview features:
+
+```json
+[
+  {
+    "name": "driverAdapters",
+    "description": "Enable driver adapters for database connections"
+  },
+  {
+    "name": "multiSchema",
+    "description": "Support for multiple database schemas"
+  }
+]
+```
+
+### debug-panic
+
+Artificially panic for testing error handling:
+
+```bash
+prisma-fmt debug-panic
+```
+
+<Warning>
+  This command intentionally crashes the process. Only use for testing.
+</Warning>
+
+## Language Server Protocol (LSP)
+
+Prisma-fmt implements the Language Server Protocol for editor integration. It's typically used through editor extensions, not invoked directly.
+
+### LSP Features
+
+#### Formatting
+
+```rust
+// Request: textDocument/formatting
+pub fn format(params: FormatParams) -> String
+```
+
+Formats the entire document with configurable indentation.
+
+#### Completion
+
+```rust
+// Request: textDocument/completion
+pub fn text_document_completion(params: CompletionParams) -> CompletionList
+```
+
+Provides context-aware completions:
+- Model and field names
+- Attribute names (`@id`, `@unique`, etc.)
+- Datasource providers
+- Generator configurations
+- Relation field types
+
+#### Hover Information
+
+```rust
+// Request: textDocument/hover
+pub fn hover(params: HoverParams) -> Option<Hover>
+```
+
+Shows documentation when hovering over:
+- Field types
+- Attributes
+- Native types
+- Relations
+
+#### Code Actions
+
+```rust
+// Request: textDocument/codeAction
+pub fn code_actions(params: CodeActionParams) -> Vec<CodeAction>
+```
+
+Provides quick fixes and refactorings:
+- Add missing `@relation` attributes
+- Create missing opposite relation fields
+- Add missing `@map` or `@@map` attributes
+- Fix relation names
+
+**Example code action:**
+
+```prisma
+model Post {
+  id     Int  @id
+  author User // Missing relation field on User
+}
+
+model User {
+  id Int @id
+  // Code action suggests adding: posts Post[]
+}
+```
+
+#### Find References
+
+```rust
+// Request: textDocument/references
+pub fn references(params: ReferenceParams) -> Vec<Location>
+```
+
+Finds all references to:
+- Models
+- Fields
+- Enums
+
+#### Rename
+
+```rust
+// Request: textDocument/rename
+pub fn rename(params: RenameParams) -> WorkspaceEdit
+```
+
+Renames symbols across the schema file.
+
+#### Document Symbols
+
+```rust
+// Request: textDocument/documentSymbol
+pub fn document_symbols(params: DocumentSymbolParams) -> Vec<DocumentSymbol>
+```
+
+Provides outline view of:
+- Models
+- Enums
+- Datasources
+- Generators
+
+## Editor Integration
+
+Prisma-fmt is typically used through editor extensions:
+
+### VS Code
+
+The [Prisma VS Code extension](https://marketplace.visualstudio.com/items?itemName=Prisma.prisma) uses prisma-fmt:
+
+```json
+{
+  "prisma.formatOnSave": true,
+  "prisma.trace.server": "messages"
+}
+```
+
+### Neovim
+
+Using [nvim-lspconfig](https://github.com/neovim/nvim-lspconfig):
+
+```lua
+require('lspconfig').prismals.setup {
+  cmd = { 'prisma-fmt', 'lsp' },
+  filetypes = { 'prisma' },
+}
+```
+
+### Other Editors
+
+Any LSP-compatible editor can use prisma-fmt by configuring it as a language server for `.prisma` files.
+
+## Building the Binary
+
+<Steps>
+  <Step title="Build with Cargo">
+    ```bash
+    # Debug build
+    cargo build -p prisma-fmt
+
+    # Release build
+    cargo build --release -p prisma-fmt
+    ```
+  </Step>
+
+  <Step title="Find the binary">
+    ```bash
+    ./target/debug/prisma-fmt
+    ./target/release/prisma-fmt
+    ```
+  </Step>
+
+  <Step title="Test formatting">
+    ```bash
+    echo 'model User{id Int @id}' | ./target/debug/prisma-fmt format
+    ```
+  </Step>
+</Steps>
+
+## WebAssembly Build
+
+Prisma-fmt is also available as a WebAssembly module for use in browsers:
+
+```bash
+make build-schema-wasm
+```
+
+Output: `./target/prisma-schema-wasm/`
+
+### WASM API
+
+```typescript
+import init, { format, lint } from 'prisma-schema-wasm';
+
+await init();
+
+const schema = `
+model User {
+  id Int @id
+}`;
+
+const formatted = format(schema, { tabSize: 2 });
+console.log(formatted);
+```
+
+## Testing
+
+Prisma-fmt uses snapshot testing with `expect-test`:
+
+```bash
+# Run tests
+cargo test -p prisma-fmt
+
+# Update snapshots
+UPDATE_EXPECT=1 cargo test -p prisma-fmt
+```
+
+### Example Test
+
+```rust
+#[test]
+fn format_adds_newlines() {
+    let input = "model User{id Int @id}";
+    let expected = expect![[r#"
+        model User {
+          id Int @id
+        }
+    "#]];
+    expected.assert_eq(&format(input, 2));
+}
+```
+
+## Environment Variables
+
+<ParamField path="RUST_LOG" type="string">
+  Configure logging verbosity (e.g., `debug`, `prisma_fmt=trace`)
+</ParamField>
+
+<ParamField path="UPDATE_EXPECT" type="1">
+  Update expect-test snapshots during test runs
+</ParamField>
+
+## Related Documentation
+
+<CardGroup cols={2}>
+  <Card title="Prisma Format Component" icon="paintbrush" href="/components/prisma-fmt">
+    Deep dive into prisma-fmt architecture
+  </Card>
+  <Card title="PSL Overview" icon="file-code" href="/psl/overview">
+    Prisma Schema Language specification
+  </Card>
+  <Card title="PSL Parser" icon="code" href="/psl/parser">
+    How schema parsing works
+  </Card>
+  <Card title="PSL Validation" icon="check" href="/psl/validation">
+    Schema validation system
+  </Card>
+</CardGroup>

@@ -1,0 +1,316 @@
+---
+title: "Building Prisma Engines"
+description: "Build instructions and prerequisites for Prisma Engines development"
+---
+
+## Prerequisites
+
+Before building Prisma Engines, ensure you have the following installed:
+
+<Steps>
+  <Step title="Install Rust Toolchain">
+    Install the latest stable version of Rust. You can get the toolchain at [rustup](https://rustup.rs/) or use your package manager.
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+  </Step>
+
+  <Step title="Linux: Install OpenSSL">
+    On Linux systems, OpenSSL is required:
+    
+    ```bash
+    # Ubuntu/Debian
+    sudo apt-get install libssl-dev pkg-config
+    
+    # Fedora/RHEL
+    sudo dnf install openssl-devel
+    ```
+  </Step>
+
+  <Step title="Install direnv">
+    Install [direnv](https://github.com/direnv/direnv) to automatically load environment variables:
+    
+    ```bash
+    # macOS
+    brew install direnv
+    
+    # Linux
+    # Follow instructions at https://direnv.net/docs/installation.html
+    ```
+    
+    Make sure direnv is [hooked](https://direnv.net/docs/hook.html) into your shell.
+  </Step>
+
+  <Step title="Allow direnv in Repository">
+    Navigate to the repository root and allow direnv:
+    
+    ```bash
+    cd /path/to/prisma-engines
+    direnv allow
+    ```
+    
+    <Warning>
+      Alternatively, you can manually load the environment variables defined in `./.envrc`, but using direnv is recommended.
+    </Warning>
+  </Step>
+
+  <Step title="Optional: Install Node.js and pnpm">
+    Required for building driver adapters:
+    
+    - Node.js ≥ 20
+    - pnpm package manager
+    
+    ```bash
+    # Install Node.js 20+ using nvm
+    nvm install 20
+    nvm use 20
+    
+    # Install pnpm
+    npm install -g pnpm
+    ```
+  </Step>
+</Steps>
+
+## Environment Setup
+
+The repository uses `.envrc` to configure essential environment variables:
+
+```bash
+export WORKSPACE_ROOT=$(pwd)
+export RUST_LOG_FORMAT=devel
+export RUST_LOG=info
+```
+
+You can create a `.envrc.local` file (gitignored) for local overrides.
+
+### Optional: Nix Users
+
+The repository includes a `shell.nix` file for Nix users. If you have Nix installed and direnv configured, all dependencies will be automatically set up.
+
+To disable Nix in environments where it's pre-installed (e.g., Gitpod):
+
+```bash
+export DISABLE_NIX=1
+```
+
+## Building the Engines
+
+### Build All Engines (Debug Mode)
+
+To build all engines in debug mode:
+
+```bash
+cargo build
+```
+
+Binaries will be located in `target/debug/`:
+
+| Component      | Binary Path                        |
+| -------------- | ---------------------------------- |
+| Schema Engine  | `./target/debug/schema-engine`     |
+| Prisma Format  | `./target/debug/prisma-fmt`        |
+
+### Build All Engines (Release Mode)
+
+For optimized production binaries:
+
+```bash
+cargo build --release
+# or
+make release
+```
+
+Release binaries will be in `target/release/`.
+
+### Build Specific Components
+
+<CodeGroup>
+```bash Schema Engine
+cargo build -p schema-engine-cli
+```
+
+```bash Prisma Format
+cargo build -p prisma-fmt
+```
+
+```bash Query Compiler (Wasm)
+make build-qc-wasm
+```
+
+```bash Schema Engine (Wasm)
+make build-se-wasm
+```
+</CodeGroup>
+
+### Build Query Compiler Wasm
+
+The query compiler is a library crate that compiles to Wasm for the JavaScript runtime:
+
+<CodeGroup>
+```bash Fast Build
+make build-qc-wasm-fast
+```
+
+```bash Small Build (Optimized)
+make build-qc-wasm-small
+```
+
+```bash Both Variants
+make build-qc-wasm
+```
+</CodeGroup>
+
+Output location: `query-compiler/query-compiler-wasm/pkg/`
+
+### Build Driver Adapters
+
+Driver adapters enable the query compiler to work with JavaScript database drivers:
+
+<Steps>
+  <Step title="Ensure prisma/prisma Repository">
+    The driver adapters build process requires the main Prisma repository as a sibling:
+    
+    ```bash
+    cd ..
+    git clone https://github.com/prisma/prisma.git
+    cd prisma-engines
+    ```
+  </Step>
+
+  <Step title="Build Driver Adapters Kit">
+    <CodeGroup>
+    ```bash Query Compiler Adapters
+    make build-driver-adapters-kit-qc
+    ```
+    
+    ```bash Full Kit
+    make build-driver-adapters-kit
+    ```
+    </CodeGroup>
+  </Step>
+</Steps>
+
+## Build Targets Reference
+
+### Makefile Targets
+
+| Target                           | Description                                    |
+| -------------------------------- | ---------------------------------------------- |
+| `make build`                     | Build all engines (debug)                      |
+| `make release`                   | Build all engines (release)                    |
+| `make build-qc-wasm`             | Build query compiler Wasm (fast + small)       |
+| `make build-qc-wasm-fast`        | Build query compiler Wasm (fast variant)       |
+| `make build-qc-wasm-small`       | Build query compiler Wasm (size-optimized)     |
+| `make build-se-wasm`             | Build schema engine Wasm                       |
+| `make build-schema-wasm`         | Build Prisma schema Wasm package               |
+| `make build-driver-adapters-kit` | Build driver adapters (full)                   |
+| `make build-driver-adapters-kit-qc` | Build driver adapters for query compiler    |
+| `make pedantic`                  | Run formatting and clippy checks (CI mode)     |
+| `make clean`                     | Clean all build artifacts                      |
+
+### Clean Build Artifacts
+
+<CodeGroup>
+```bash Clean Everything
+make clean
+```
+
+```bash Clean Specific Components
+make clean-qc-wasm
+make clean-se-wasm
+make clean-cargo
+```
+</CodeGroup>
+
+## Code Quality
+
+### Format Code
+
+```bash
+cargo fmt
+```
+
+### Run Linter (Clippy)
+
+```bash
+cargo clippy --all-features --all-targets -- -Dwarnings
+```
+
+### Pedantic CI Check
+
+Emulate the CI compilation checks locally:
+
+```bash
+make pedantic
+```
+
+This runs:
+1. `cargo fmt -- --check` (formatting validation)
+2. `cargo clippy --all-features --all-targets -Dwarnings` (lint checks)
+3. Additional Wasm target checks
+
+<Warning>
+  Fix compiler and clippy diagnostics before addressing formatting issues.
+</Warning>
+
+## Optimizing Build Performance
+
+### Parallel rust-analyzer Builds
+
+When rust-analyzer runs `cargo check`, it locks the build directory. To avoid this:
+
+1. Open VSCode settings
+2. Search for "Check on Save: Extra Args"
+3. Add a custom target directory:
+   ```
+   --target-dir:/tmp/rust-analyzer-check
+   ```
+
+### Using LLD Linker (Linux)
+
+The `.envrc` automatically configures the faster LLD linker on Linux if available:
+
+```bash
+# Install LLD
+sudo apt-get install lld  # Ubuntu/Debian
+sudo dnf install lld      # Fedora/RHEL
+```
+
+## Troubleshooting
+
+### OpenSSL Not Found (Linux)
+
+If you encounter OpenSSL linking errors:
+
+```bash
+sudo apt-get install libssl-dev pkg-config
+```
+
+### direnv Not Loading
+
+Ensure direnv is properly hooked in your shell config:
+
+```bash
+# For bash, add to ~/.bashrc:
+eval "$(direnv hook bash)"
+
+# For zsh, add to ~/.zshrc:
+eval "$(direnv hook zsh)"
+```
+
+### Wasm Build Fails
+
+Ensure the Wasm target is installed:
+
+```bash
+rustup target add wasm32-unknown-unknown
+```
+
+## Next Steps
+
+Once you've successfully built the engines:
+
+- Learn about [testing](/development/testing)
+- Explore [debugging techniques](/development/debugging)
+- Review [contribution guidelines](/development/contributing)

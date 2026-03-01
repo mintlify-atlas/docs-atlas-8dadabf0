@@ -1,0 +1,446 @@
+---
+title: psl-core
+description: Prisma Schema Language parser, validator, and configuration tools
+---
+
+The `psl-core` crate provides the core functionality for parsing, validating, and working with Prisma schema files. It transforms PSL text into a validated internal representation.
+
+## Overview
+
+This library is the foundation of all Prisma tooling that works with schema files. It parses `.prisma` files, validates them, and provides a rich API for working with models, fields, relations, and configuration.
+
+## Installation
+
+```toml
+[dependencies]
+psl-core = "0.1.0"
+```
+
+## Core Functions
+
+### validate
+
+Parse and validate a Prisma schema file.
+
+```rust
+pub fn validate(
+    file: SourceFile,
+    connectors: ConnectorRegistry<'_>,
+    extension_types: &dyn ExtensionTypes,
+) -> ValidatedSchema
+```
+
+<ParamField path="file" type="SourceFile" required>
+  The schema file source to parse
+</ParamField>
+
+<ParamField path="connectors" type="ConnectorRegistry" required>
+  Registry of available database connectors
+</ParamField>
+
+<ParamField path="extension_types" type="&dyn ExtensionTypes" required>
+  Extension types for custom type validation
+</ParamField>
+
+<ResponseField name="ValidatedSchema" type="ValidatedSchema">
+  Contains the validated schema, configuration, and diagnostics
+</ResponseField>
+
+### validate_multi_file
+
+Parse and validate multiple Prisma schema files.
+
+```rust
+pub fn validate_multi_file(
+    files: &[(String, SourceFile)],
+    connectors: ConnectorRegistry<'_>,
+    extension_types: &dyn ExtensionTypes,
+) -> ValidatedSchema
+```
+
+<ParamField path="files" type="&[(String, SourceFile)]" required>
+  List of (filename, source) pairs to parse
+</ParamField>
+
+### parse_configuration
+
+Parse only the configuration blocks (datasource, generator) from a schema.
+
+```rust
+pub fn parse_configuration(
+    schema: &str,
+    connectors: ConnectorRegistry<'_>,
+) -> Result<Configuration, Diagnostics>
+```
+
+<ParamField path="schema" type="&str" required>
+  The schema string to parse
+</ParamField>
+
+<ResponseField name="Configuration" type="Configuration">
+  Contains datasources and generators configuration
+</ResponseField>
+
+### reformat
+
+Reformat a Prisma schema file.
+
+```rust
+pub fn reformat(
+    schema: &str,
+    indent_width: usize,
+) -> Result<String, String>
+```
+
+<ParamField path="schema" type="&str" required>
+  The schema string to reformat
+</ParamField>
+
+<ParamField path="indent_width" type="usize" required>
+  Number of spaces per indentation level
+</ParamField>
+
+<ResponseField name="String" type="String">
+  The reformatted schema string
+</ResponseField>
+
+## Core Types
+
+### ValidatedSchema
+
+The result of validating a Prisma schema.
+
+```rust
+pub struct ValidatedSchema {
+    pub configuration: Configuration,
+    pub db: ParserDatabase,
+    pub connector: &'static dyn Connector,
+    pub diagnostics: Diagnostics,
+}
+```
+
+<ParamField path="configuration" type="Configuration">
+  Parsed datasources and generators
+</ParamField>
+
+<ParamField path="db" type="ParserDatabase">
+  The parsed and validated schema database
+</ParamField>
+
+<ParamField path="connector" type="&'static dyn Connector">
+  The active database connector
+</ParamField>
+
+<ParamField path="diagnostics" type="Diagnostics">
+  Errors and warnings from parsing/validation
+</ParamField>
+
+#### Methods
+
+```rust
+impl ValidatedSchema {
+    pub fn relation_mode(&self) -> RelationMode
+    pub fn render_own_diagnostics(&self) -> String
+}
+```
+
+### Configuration
+
+Configuration blocks from the schema.
+
+```rust
+pub struct Configuration {
+    pub generators: Vec<Generator>,
+    pub datasources: Vec<Datasource>,
+    pub warnings: Vec<String>,
+}
+```
+
+<ParamField path="generators" type="Vec<Generator>">
+  List of generator blocks
+</ParamField>
+
+<ParamField path="datasources" type="Vec<Datasource>">
+  List of datasource blocks
+</ParamField>
+
+<ParamField path="warnings" type="Vec<String>">
+  Configuration warnings
+</ParamField>
+
+### Datasource
+
+Represents a datasource block in the schema.
+
+```rust
+pub struct Datasource {
+    pub name: String,
+    pub provider: String,
+    pub active_provider: &'static str,
+    pub documentation: Option<String>,
+    pub active_connector: &'static dyn Connector,
+    pub relation_mode: Option<RelationMode>,
+    pub namespaces: Vec<(String, Span)>,
+}
+```
+
+<ParamField path="name" type="String">
+  The datasource name (e.g., "db")
+</ParamField>
+
+<ParamField path="provider" type="String">
+  The provider string from the schema
+</ParamField>
+
+<ParamField path="active_provider" type="&'static str">
+  The resolved active provider name
+</ParamField>
+
+<ParamField path="active_connector" type="&'static dyn Connector">
+  The connector implementation for this datasource
+</ParamField>
+
+<ParamField path="relation_mode" type="Option<RelationMode>">
+  Explicit relation mode (foreignKeys or prisma)
+</ParamField>
+
+<ParamField path="namespaces" type="Vec<(String, Span)>">
+  Database schemas/namespaces (for multi-schema support)
+</ParamField>
+
+#### Methods
+
+```rust
+impl Datasource {
+    pub fn capabilities(&self) -> ConnectorCapabilities
+    pub fn relation_mode(&self) -> RelationMode
+    pub fn provider_defined(&self) -> bool
+    pub fn schemas_defined(&self) -> bool
+}
+```
+
+### Generator
+
+Represents a generator block in the schema.
+
+```rust
+pub struct Generator {
+    pub name: String,
+    pub provider: StringFromEnvVar,
+    pub output: Option<StringFromEnvVar>,
+    pub config: HashMap<String, GeneratorConfigValue>,
+    pub documentation: Option<String>,
+    pub preview_features: Option<BitFlags<PreviewFeature>>,
+}
+```
+
+<ParamField path="name" type="String">
+  The generator name
+</ParamField>
+
+<ParamField path="provider" type="StringFromEnvVar">
+  The generator provider (can reference env var)
+</ParamField>
+
+<ParamField path="output" type="Option<StringFromEnvVar>">
+  Output path for generated code
+</ParamField>
+
+<ParamField path="preview_features" type="Option<BitFlags<PreviewFeature>>">
+  Enabled preview features
+</ParamField>
+
+### PreviewFeature
+
+Enum of available preview features.
+
+```rust
+pub enum PreviewFeature {
+    FullTextSearch,
+    FullTextIndex,
+    Metrics,
+    MultiSchema,
+    Views,
+    // ... and more
+}
+```
+
+## Parser Database
+
+The `ParserDatabase` provides access to the parsed schema:
+
+```rust
+use psl::parser_database::ParserDatabase;
+
+let db: &ParserDatabase = &validated_schema.db;
+
+// Walk models
+for model in db.walk_models() {
+    println!("Model: {}", model.name());
+    
+    for field in model.scalar_fields() {
+        println!("  Field: {} ({})", field.name(), field.field_type());
+    }
+}
+```
+
+## Connector Registry
+
+Built-in connectors are available:
+
+```rust
+use psl::builtin_connectors::BUILTIN_CONNECTORS;
+
+let schema = psl::validate(
+    source_file,
+    BUILTIN_CONNECTORS,
+    &extension_types,
+);
+```
+
+## Feature Flags
+
+Database-specific features:
+
+```toml
+[features]
+postgresql = []
+sqlite = []
+mysql = []
+cockroachdb = ["postgresql"]
+mssql = []
+mongodb = []
+```
+
+## Dependencies
+
+Key dependencies:
+
+- `diagnostics` - Error and warning reporting
+- `parser-database` - Internal database representation
+- `schema-ast` - Abstract syntax tree types
+- `prisma-value` - Prisma value types
+- `serde` - Serialization support
+- `regex` - Regular expression support
+
+## Re-exports
+
+Commonly used types are re-exported:
+
+```rust
+pub use diagnostics;
+pub use parser_database::{self, coerce, coerce_array, generators, is_reserved_type_name};
+pub use schema_ast;
+```
+
+## Examples
+
+### Parsing a Schema
+
+```rust
+use psl::{SourceFile, validate, builtin_connectors::BUILTIN_CONNECTORS};
+use std::sync::Arc;
+
+let schema = r#"
+    datasource db {
+        provider = "postgresql"
+    }
+    
+    model User {
+        id    Int    @id @default(autoincrement())
+        email String @unique
+        name  String?
+    }
+"#;
+
+let source = SourceFile::new_allocated(Arc::from(schema.into()));
+let validated = validate(source, BUILTIN_CONNECTORS, &());
+
+if validated.diagnostics.has_errors() {
+    eprintln!("Errors: {}", validated.render_own_diagnostics());
+} else {
+    println!("Schema is valid!");
+    
+    // Access models
+    for model in validated.db.walk_models() {
+        println!("Found model: {}", model.name());
+    }
+}
+```
+
+### Parsing Configuration Only
+
+```rust
+use psl::{parse_configuration, builtin_connectors::BUILTIN_CONNECTORS};
+
+let schema = r#"
+    datasource db {
+        provider = "postgresql"
+    }
+    
+    generator client {
+        provider = "prisma-client-js"
+        previewFeatures = ["multiSchema"]
+    }
+"#;
+
+match parse_configuration(schema, BUILTIN_CONNECTORS) {
+    Ok(config) => {
+        println!("Found {} datasources", config.datasources.len());
+        println!("Found {} generators", config.generators.len());
+        
+        for ds in &config.datasources {
+            println!("Datasource '{}': provider={}", ds.name, ds.provider);
+        }
+    }
+    Err(diagnostics) => {
+        eprintln!("Configuration errors: {:#?}", diagnostics);
+    }
+}
+```
+
+### Multi-file Schema
+
+```rust
+use psl::{SourceFile, validate_multi_file, builtin_connectors::BUILTIN_CONNECTORS};
+use std::sync::Arc;
+
+let files = vec![
+    (
+        "schema.prisma".to_string(),
+        SourceFile::new_allocated(Arc::from("datasource db { provider = \"postgresql\" }".into())),
+    ),
+    (
+        "models.prisma".to_string(),
+        SourceFile::new_allocated(Arc::from("model User { id Int @id }".into())),
+    ),
+];
+
+let validated = validate_multi_file(&files, BUILTIN_CONNECTORS, &());
+
+println!("Validated multi-file schema");
+```
+
+### Reformatting a Schema
+
+```rust
+use psl::reformat;
+
+let messy_schema = r#"
+model User{
+id Int @id
+email String
+}
+"#;
+
+match reformat(messy_schema, 2) {
+    Ok(formatted) => println!("Formatted:\n{}", formatted),
+    Err(e) => eprintln!("Format error: {}", e),
+}
+```
+
+## Related
+
+- [query-structure](/api/query-structure) - Uses PSL types for queries
+- [schema-core](/api/schema-core) - Uses PSL for migrations
+- [PSL Overview](/psl/overview) - Language guide

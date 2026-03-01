@@ -1,0 +1,695 @@
+---
+title: Prisma Schema Language (PSL)
+description: Overview of the Prisma Schema Language parser and validator
+---
+
+## Overview
+
+Prisma Schema Language (PSL) is the domain-specific language used to define your data model, database connection, and generator configuration in Prisma. This component is responsible for parsing, validating, and analyzing Prisma schema files.
+
+<Note>
+PSL is the foundation of the entire Prisma stack. Every component—from the Schema Engine to the Query Compiler to Prisma Format—relies on PSL to understand your data model.
+</Note>
+
+## What is PSL?
+
+PSL is a declarative language that lets you define:
+
+- **Data models**: Tables, collections, and their relationships
+- **Fields**: Columns with types, attributes, and constraints
+- **Datasources**: Database connection configuration
+- **Generators**: Client and other code generation settings
+- **Enums**: Enumerated types
+- **Composite types**: Embedded document types (MongoDB)
+
+### Example Schema
+
+```prisma
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  name      String?
+  posts     Post[]
+  createdAt DateTime @default(now())
+  
+  @@map("users")
+}
+
+model Post {
+  id        Int      @id @default(autoincrement())
+  title     String
+  content   String?
+  published Boolean  @default(false)
+  author    User     @relation(fields: [authorId], references: [id])
+  authorId  Int
+  
+  @@index([authorId])
+}
+```
+
+## Architecture
+
+The PSL implementation follows a layered architecture with clear separation of concerns:
+
+<CardGroup cols={2}>
+  <Card title="Diagnostics" icon="triangle-exclamation">
+    Error and warning collection, pretty printing, span tracking
+  </Card>
+  <Card title="Schema AST" icon="code">
+    Abstract syntax tree representation of the parsed schema
+  </Card>
+  <Card title="Parser Database" icon="database">
+    Semantic analysis and validation of the schema
+  </Card>
+  <Card title="PSL Core" icon="layer-group">
+    Public API, configuration, and high-level operations
+  </Card>
+</CardGroup>
+
+### Dependency Graph
+
+```
+diagnostics →
+schema-ast →
+parser-database →
+psl-core →
+builtin-connectors →
+psl (public API)
+```
+
+## Crate Organization
+
+The PSL codebase is organized into focused crates:
+
+### `diagnostics`
+
+Handles errors, warnings, and diagnostic messages:
+
+```rust
+pub struct Diagnostics {
+    // Collection of errors and warnings
+}
+
+pub struct DatamodelError {
+    // Error message and location
+}
+
+pub struct Span {
+    // Source code location for error reporting
+}
+```
+
+**Features:**
+- Error collection during parsing
+- Pretty-printed error messages with source context
+- Span tracking for precise error locations
+- Warning accumulation
+
+### `schema-ast`
+
+Contains the Abstract Syntax Tree definitions:
+
+```rust
+pub struct SchemaAst {
+    pub tops: Vec<Top>,
+}
+
+pub enum Top {
+    Model(Model),
+    Enum(Enum),
+    Source(SourceConfig),
+    Generator(GeneratorConfig),
+    Type(CompositeType),
+}
+```
+
+**Responsibilities:**
+- Raw schema parsing
+- AST node definitions
+- Syntax validation
+- Comment preservation
+
+### `parser-database`
+
+Provides semantic analysis and validation:
+
+```rust
+pub struct ParserDatabase {
+    // Validated schema information
+}
+
+impl ParserDatabase {
+    pub fn new(files: &[(String, SourceFile)], 
+               diagnostics: &mut Diagnostics) -> Self;
+    
+    // Query methods for models, fields, relations, etc.
+}
+```
+
+**Features:**
+- Attribute validation
+- Relation inference
+- Type checking
+- Constraint validation
+- Index and unique constraint handling
+
+### `psl-core`
+
+High-level API and configuration:
+
+```rust
+pub struct ValidatedSchema {
+    pub configuration: Configuration,
+    pub db: ParserDatabase,
+    pub connector: &'static dyn Connector,
+    pub diagnostics: Diagnostics,
+}
+
+pub fn validate(
+    file: SourceFile,
+    connectors: ConnectorRegistry<'_>,
+    extension_types: &dyn ExtensionTypes,
+) -> ValidatedSchema
+```
+
+**Provides:**
+- Schema validation entry point
+- Configuration parsing (datasources, generators)
+- Connector selection
+- Preview feature management
+
+### `builtin-connectors`
+
+Database-specific validation and type systems:
+
+- PostgreSQL connector
+- MySQL connector
+- SQLite connector
+- SQL Server connector
+- MongoDB connector
+- CockroachDB connector
+
+**Each connector provides:**
+- Native type mappings
+- Capability definitions
+- Database-specific validation rules
+- Default values and constraints
+
+### `psl` (Public API)
+
+The main entry point used by other Prisma components:
+
+```rust
+pub use psl::{
+    Configuration,
+    Datasource,
+    Generator,
+    ValidatedSchema,
+    validate,
+    parse_configuration,
+    reformat,
+};
+```
+
+## Core Functionality
+
+### Schema Validation
+
+The main validation flow:
+
+```rust
+use psl::*;
+
+let schema = r#"
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int    @id
+  email String @unique
+}
+"#;
+
+let source_file = SourceFile::from(schema);
+let validated = validate(
+    source_file,
+    BUILTIN_CONNECTORS,
+    &EmptyExtensionTypes,
+);
+
+if validated.diagnostics.has_errors() {
+    eprintln!("{}", validated.render_own_diagnostics());
+}
+```
+
+### Multi-File Schemas
+
+Prisma supports splitting schemas across multiple files:
+
+```rust
+let files = vec![
+    ("schema.prisma".to_string(), SourceFile::from(main_schema)),
+    ("models/user.prisma".to_string(), SourceFile::from(user_schema)),
+    ("models/post.prisma".to_string(), SourceFile::from(post_schema)),
+];
+
+let validated = validate_multi_file(
+    &files,
+    BUILTIN_CONNECTORS,
+    &EmptyExtensionTypes,
+);
+```
+
+### Configuration Parsing
+
+Extract datasources and generators without full validation:
+
+```rust
+let (files, config, diagnostics) = 
+    error_tolerant_parse_configuration(&files, BUILTIN_CONNECTORS);
+
+for datasource in config.datasources {
+    println!("Provider: {}", datasource.active_provider);
+    println!("URL: {}", datasource.url);
+}
+
+for generator in config.generators {
+    println!("Generator: {}", generator.name);
+    println!("Provider: {}", generator.provider);
+}
+```
+
+### Schema Reformatting
+
+Format Prisma schemas consistently:
+
+```rust
+let formatted = psl::reformat(schema_string, 2); // 2-space indent
+```
+
+## Validation Features
+
+<CardGroup cols={2}>
+  <Card title="Type Checking" icon="check-double">
+    Validates field types, ensures type compatibility, checks native type mappings
+  </Card>
+  <Card title="Relation Validation" icon="link">
+    Infers implicit relations, validates explicit relations, checks referential actions
+  </Card>
+  <Card title="Attribute Validation" icon="at">
+    Validates `@id`, `@unique`, `@default`, `@relation`, and all other attributes
+  </Card>
+  <Card title="Constraint Checking" icon="shield">
+    Ensures unique constraints, validates indexes, checks composite keys
+  </Card>
+</CardGroup>
+
+### Attribute System
+
+PSL supports field-level and block-level attributes:
+
+**Field attributes** (single `@`):
+```prisma
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique @db.VarChar(255)
+  createdAt DateTime @default(now()) @map("created_at")
+}
+```
+
+**Block attributes** (double `@@`):
+```prisma
+model User {
+  firstName String
+  lastName  String
+  
+  @@unique([firstName, lastName])
+  @@index([lastName])
+  @@map("users")
+}
+```
+
+### Relation Inference
+
+PSL can automatically infer simple relations:
+
+```prisma
+// Explicit relation
+model Post {
+  author   User @relation(fields: [authorId], references: [id])
+  authorId Int
+}
+
+model User {
+  posts Post[]
+}
+```
+
+```prisma
+// Implicit many-to-many
+model Post {
+  categories Category[]
+}
+
+model Category {
+  posts Post[]
+}
+// PSL infers a join table: _CategoryToPost
+```
+
+## Diagnostics and Error Reporting
+
+PSL provides excellent error messages with source context:
+
+```
+Error validating field `authorId` in model `Post`: 
+The relation field `author` on model `Post` is missing an 
+opposite relation field on the model `User`.
+  --> schema.prisma:12
+   |
+11 |   author   User @relation(fields: [authorId], references: [id])
+12 |   authorId Int
+   |
+```
+
+### Pretty Printing
+
+The diagnostics crate provides formatted output:
+
+```rust
+if validated.diagnostics.has_errors() {
+    // Renders colored, formatted errors with source spans
+    eprintln!("{}", validated.render_own_diagnostics());
+}
+```
+
+## Connector System
+
+Connectors provide database-specific behavior:
+
+```rust
+pub trait Connector {
+    fn name(&self) -> &str;
+    fn capabilities(&self) -> ConnectorCapabilities;
+    fn default_native_type_for_scalar_type(&self, scalar_type: ScalarType) 
+        -> Option<NativeTypeInstance>;
+    // ... more methods
+}
+```
+
+### Capabilities
+
+Each connector declares its capabilities:
+
+```rust
+let caps = connector.capabilities();
+
+if caps.contains(ConnectorCapability::FullTextSearch) {
+    // Full-text search is supported
+}
+
+if caps.contains(ConnectorCapability::AutoIncrement) {
+    // Auto-increment IDs are supported
+}
+```
+
+**Common capabilities:**
+- `AutoIncrement`
+- `Enums`
+- `Json`
+- `FullTextSearch`
+- `MultiSchema`
+- `NamedForeignKeys`
+- `ScalarLists`
+- And many more...
+
+## Preview Features
+
+PSL supports preview features for experimental functionality:
+
+```prisma
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "multiSchema"]
+}
+```
+
+**Managing preview features:**
+
+```rust
+pub struct PreviewFeatures {
+    // Active preview features
+}
+
+impl PreviewFeatures {
+    pub fn is_active(&self, feature: PreviewFeature) -> bool;
+}
+```
+
+## Testing
+
+PSL has three main test entry points:
+
+### 1. Validation Tests
+
+Declarative tests in `psl/tests/validation/`:
+
+```prisma
+// File: invalid_relation.prisma
+model Post {
+  author User @relation(fields: [authorId], references: [invalid])
+  authorId Int
+}
+
+model User {
+  id Int @id
+}
+
+// Expected error (in comment at end of file)
+// Error: The relation field `author` references `invalid` which does not exist.
+```
+
+```bash
+# Run validation tests
+cargo test -p psl -F all
+
+# Update expectations
+UPDATE_EXPECT=1 cargo test -p psl -F all
+```
+
+### 2. Reformat Tests
+
+Tests in `psl/tests/reformat/`:
+
+```bash
+# Each .prisma file is reformatted
+# Result compared to .reformatted.prisma file
+UPDATE_EXPECT=1 cargo test -p psl reformat
+```
+
+### 3. Unit Tests
+
+Regular Rust tests in `psl/tests/datamodel_tests.rs`:
+
+```rust
+#[test]
+fn test_unique_constraint() {
+    let schema = r#"
+        model User {
+            id    Int    @id
+            email String @unique
+        }
+    "#;
+    
+    let validated = validate_schema(schema);
+    assert!(!validated.diagnostics.has_errors());
+}
+```
+
+<Tip>
+Validation tests are preferred for new tests—they're declarative, fast to compile, and easy to maintain.
+</Tip>
+
+## Configuration
+
+### Datasource Configuration
+
+```prisma
+datasource db {
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
+  relationMode      = "prisma"  // or "foreignKeys"
+  extensions        = [uuidOssp(map: "uuid-ossp")]
+}
+```
+
+**Parsed into:**
+
+```rust
+pub struct Datasource {
+    pub name: String,
+    pub provider: String,
+    pub active_provider: &'static str,
+    pub url: StringFromEnvVar,
+    pub relation_mode: Option<RelationMode>,
+    // ... more fields
+}
+```
+
+### Generator Configuration
+
+```prisma
+generator client {
+  provider        = "prisma-client-js"
+  output          = "./generated/client"
+  previewFeatures = ["fullTextSearch"]
+  binaryTargets   = ["native", "debian-openssl-3.0.x"]
+}
+```
+
+**Parsed into:**
+
+```rust
+pub struct Generator {
+    pub name: String,
+    pub provider: String,
+    pub output: Option<String>,
+    pub preview_features: PreviewFeatures,
+    pub binary_targets: Vec<String>,
+    // ... more fields
+}
+```
+
+## Native Type Mappings
+
+Each connector maps Prisma types to database-native types:
+
+```prisma
+// PostgreSQL
+model User {
+  id      Int     @id @db.Integer
+  name    String  @db.VarChar(255)
+  balance Decimal @db.Decimal(10, 2)
+  data    Json    @db.JsonB
+}
+
+// MySQL
+model User {
+  id      Int     @id @db.Int
+  name    String  @db.VarChar(255)
+  balance Decimal @db.Decimal(10, 2)
+  data    Json    @db.Json
+}
+```
+
+## Common Use Cases
+
+### Schema Validation in CI
+
+```rust
+use psl::*;
+
+fn validate_schema_file(path: &str) -> Result<(), String> {
+    let schema = std::fs::read_to_string(path)?;
+    let source = SourceFile::from(schema);
+    let validated = validate(source, BUILTIN_CONNECTORS, &EmptyExtensionTypes);
+    
+    if validated.diagnostics.has_errors() {
+        Err(validated.render_own_diagnostics())
+    } else {
+        Ok(())
+    }
+}
+```
+
+### Programmatic Schema Generation
+
+```rust
+let schema = format!(r#"
+datasource db {{
+  provider = "{}"
+  url      = env("DATABASE_URL")
+}}
+
+model {} {{
+  id    Int    @id @default(autoincrement())
+  name  String
+}}
+"#, provider, model_name);
+
+let formatted = psl::reformat(&schema, 2)?;
+std::fs::write("schema.prisma", formatted)?;
+```
+
+### Extracting Model Information
+
+```rust
+let validated = validate_schema(schema_string);
+
+for (model_id, model) in validated.db.walk_models() {
+    println!("Model: {}", model.name());
+    
+    for field in model.scalar_fields() {
+        println!("  Field: {} ({})", field.name(), field.field_type());
+    }
+    
+    for relation in model.relations() {
+        println!("  Relation: {} -> {}", 
+            relation.name(),
+            relation.referenced_model().name()
+        );
+    }
+}
+```
+
+## Prisma 7 Changes
+
+<Warning>
+In Prisma 7, `url`, `directUrl`, and `shadowDatabaseUrl` are no longer valid in the PSL datasource block. Connection strings are now provided externally by Prisma Client.
+</Warning>
+
+PSL now rejects these properties with helpful error messages:
+
+```prisma
+// ❌ No longer valid
+datasource db {
+  provider         = "postgresql"
+  url              = env("DATABASE_URL")
+  directUrl        = env("DIRECT_URL")  // Error!
+  shadowDatabaseUrl = env("SHADOW_URL")  // Error!
+}
+
+// ✅ Valid in Prisma 7
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")  // Only for schema engine
+}
+```
+
+## Related Components
+
+- [Query Compiler](/components/query-compiler) - Uses PSL to understand the data model
+- [Schema Engine](/components/schema-engine) - Uses PSL for migration generation
+- [Prisma Format](/components/prisma-fmt) - Uses PSL for formatting and LSP features
+
+## Source Code
+
+Explore the PSL source code:
+
+- **Main crate**: `psl/psl/`
+- **Core logic**: `psl/psl-core/src/`
+- **Parser database**: `psl/parser-database/`
+- **Diagnostics**: `psl/diagnostics/`
+- **Contributing guide**: `psl/CONTRIBUTING.md`
+- **Repository**: [prisma/prisma-engines](https://github.com/prisma/prisma-engines)

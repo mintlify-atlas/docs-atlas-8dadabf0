@@ -1,0 +1,674 @@
+---
+title: 'Database Connectors'
+description: 'Connector architecture and database-specific features'
+---
+
+# Database Connectors
+
+Connectors implement database-specific validation, native types, and capabilities. They extend the generic PSL validation with provider-specific logic.
+
+## Connector Trait
+
+The `Connector` trait defines the interface for all database connectors:
+
+```rust
+pub trait Connector: Send + Sync {
+    fn provider_name(&self) -> &'static str;
+    fn is_provider(&self, name: &str) -> bool;
+    fn flavour(&self) -> Flavour;
+    fn name(&self) -> &str;
+    fn capabilities(&self) -> ConnectorCapabilities;
+    fn max_identifier_length(&self) -> usize;
+    
+    // Relation modes and referential actions
+    fn allowed_relation_mode_settings(&self) -> BitFlags<RelationMode>;
+    fn default_relation_mode(&self) -> RelationMode;
+    fn referential_actions(&self, mode: &RelationMode) -> BitFlags<ReferentialAction>;
+    
+    // Native types
+    fn available_native_type_constructors(&self) -> &[NativeTypeConstructor];
+    fn scalar_type_for_native_type(&self, native_type: &NativeTypeInstance) -> Option<ScalarFieldType>;
+    fn default_native_type_for_scalar_type(&self, scalar_type: &ScalarFieldType) -> Option<NativeTypeInstance>;
+    
+    // Validations
+    fn validate_model(&self, model: ModelWalker<'_>, relation_mode: RelationMode, diagnostics: &mut Diagnostics);
+    fn validate_enum(&self, enum_: EnumWalker<'_>, diagnostics: &mut Diagnostics);
+    fn validate_datasource(&self, preview_features: BitFlags<PreviewFeature>, datasource: &Datasource, diagnostics: &mut Diagnostics);
+    // ... more validation methods
+}
+```
+
+<Note>
+  Connectors are stateless - all methods take `&self`. Configuration and state live in the `Datasource` type.
+</Note>
+
+## Built-in Connectors
+
+PSL provides connectors for all supported databases:
+
+```rust
+pub static BUILTIN_CONNECTORS: ConnectorRegistry<'static> = &[
+    #[cfg(feature = "postgresql")]
+    POSTGRES,
+    #[cfg(feature = "mysql")]
+    MYSQL,
+    #[cfg(feature = "sqlite")]
+    SQLITE,
+    #[cfg(feature = "mssql")]
+    MSSQL,
+    #[cfg(feature = "cockroachdb")]
+    COCKROACH,
+    #[cfg(feature = "mongodb")]
+    MONGODB,
+];
+```
+
+### PostgreSQL Connector
+
+**Provider:** `postgresql`
+
+**Capabilities:**
+```rust
+pub const CAPABILITIES: ConnectorCapabilities = make_bitflags!(ConnectorCapability::{
+    AdvancedJsonNullability |
+    AnyId |
+    AutoIncrement |
+    AutoIncrementAllowedOnNonId |
+    AutoIncrementMultipleAllowed |
+    AutoIncrementNonIndexedAllowed |
+    CompoundIds |
+    CreateMany |
+    CreateManyWriteableAutoIncId |
+    CreateSkipDuplicates |
+    Enums |
+    EnumArrayPush |
+    NativeFullTextSearch |
+    NativeFullTextSearchWithoutIndex |
+    InsensitiveFilters |
+    Json |
+    JsonFiltering |
+    JsonFilteringArrayPath |
+    JsonFilteringAlphanumeric |
+    JsonArrayContains |
+    MultiSchema |
+    NamedForeignKeys |
+    NamedPrimaryKeys |
+    RelationFieldsInArbitraryOrder |
+    ScalarLists |
+    JsonLists |
+    UpdateableId |
+    WritableAutoincField |
+    ImplicitManyToManyRelation |
+    DecimalType |
+    OrderByNullsFirstLast |
+    InsertReturning |
+    UpdateReturning |
+    DeleteReturning |
+    SupportsFiltersOnRelationsWithoutJoins |
+    LateralJoin |
+    PartialIndex
+});
+```
+
+**Native Types:**
+```rust
+pub enum PostgresType {
+    SmallInt,
+    Integer,
+    BigInt,
+    Decimal(Option<(u32, u32)>),
+    Money,
+    Real,
+    DoublePrecision,
+    SmallSerial,
+    Serial,
+    BigSerial,
+    VarChar(Option<u32>),
+    Char(Option<u32>),
+    Text,
+    ByteA,
+    Timestamp(Option<u32>),
+    Timestamptz(Option<u32>),
+    Date,
+    Time(Option<u32>),
+    Timetz(Option<u32>),
+    Boolean,
+    Bit(Option<u32>),
+    VarBit(Option<u32>),
+    Uuid,
+    Xml,
+    Json,
+    JsonB,
+    Inet,
+    Oid,
+}
+```
+
+**Special Features:**
+- Extensions support (e.g., `postgis`, `uuid-ossp`)
+- Multi-schema support
+- Advanced indexing (GIN, GIST, BRIN)
+- Full-text search
+- Partial indexes with WHERE clauses
+
+### MySQL Connector
+
+**Provider:** `mysql`
+
+**Capabilities:**
+```rust
+pub const CAPABILITIES: ConnectorCapabilities = make_bitflags!(ConnectorCapability::{
+    Enums |
+    EnumArrayPush |
+    Json |
+    AutoIncrementAllowedOnNonId |
+    RelationFieldsInArbitraryOrder |
+    CreateMany |
+    WritableAutoincField |
+    CreateSkipDuplicates |
+    UpdateableId |
+    JsonFiltering |
+    JsonFilteringJsonPath |
+    JsonFilteringAlphanumeric |
+    JsonArrayContains |
+    CreateManyWriteableAutoIncId |
+    AutoIncrement |
+    CompoundIds |
+    AnyId |
+    NamedForeignKeys |
+    AdvancedJsonNullability |
+    IndexColumnLengthPrefixing |
+    FullTextIndex |
+    NativeFullTextSearch |
+    NativeFullTextSearchWithIndex |
+    MultipleFullTextAttributesPerModel |
+    ImplicitManyToManyRelation |
+    DecimalType |
+    OrderByNullsFirstLast |
+    RowIn |
+    SupportsFiltersOnRelationsWithoutJoins |
+    CorrelatedSubqueries
+});
+```
+
+**Native Types:**
+```rust
+pub enum MySqlType {
+    TinyInt,
+    SmallInt,
+    MediumInt,
+    Int,
+    BigInt,
+    Decimal(Option<(u32, u32)>),
+    Float,
+    Double,
+    Bit(u32),
+    Char(u32),
+    VarChar(u32),
+    Binary(u32),
+    VarBinary(u32),
+    TinyBlob,
+    Blob,
+    MediumBlob,
+    LongBlob,
+    TinyText,
+    Text,
+    MediumText,
+    LongText,
+    Date,
+    Time(Option<u32>),
+    DateTime(Option<u32>),
+    Timestamp(Option<u32>),
+    Year,
+    Json,
+}
+```
+
+**Special Features:**
+- Index column length prefixing
+- Full-text indexes
+- Multiple character sets
+- Enum type support
+
+### SQLite Connector
+
+**Provider:** `sqlite`
+
+**Capabilities:**
+```rust
+pub const CAPABILITIES: ConnectorCapabilities = make_bitflags!(ConnectorCapability::{
+    CompoundIds |
+    AnyId |
+    RelationFieldsInArbitraryOrder |
+    ImplicitManyToManyRelation |
+    DecimalType |
+    BackwardCompatibleQueryRaw |
+    InsensitiveFilters |
+    JsonFilteringAlphanumeric |
+    OrderByNullsFirstLast
+});
+```
+
+**Native Types:**
+```rust
+pub enum SqliteType {
+    Integer,
+    Real,
+    Text,
+    Blob,
+}
+```
+
+**Limitations:**
+- No enums (emulated as CHECK constraints)
+- No native JSON type (stored as TEXT)
+- Limited ALTER TABLE support
+- No foreign key actions in some configurations
+
+### SQL Server (MSSQL) Connector
+
+**Provider:** `sqlserver`
+
+**Capabilities:**
+```rust
+pub const CAPABILITIES: ConnectorCapabilities = make_bitflags!(ConnectorCapability::{
+    CompoundIds |
+    AnyId |
+    AutoIncrement |
+    InsensitiveFilters |
+    CreateMany |
+    UpdateableId |
+    Json |
+    JsonFiltering |
+    RelationFieldsInArbitraryOrder |
+    ImplicitManyToManyRelation |
+    DecimalType |
+    OrderByNullsFirstLast
+});
+```
+
+**Native Types:**
+```rust
+pub enum MsSqlType {
+    TinyInt,
+    SmallInt,
+    Int,
+    BigInt,
+    Decimal(Option<(u32, u32)>),
+    Money,
+    SmallMoney,
+    Bit,
+    Float(Option<u32>),
+    Real,
+    Date,
+    Time,
+    DateTime,
+    DateTime2,
+    DateTimeOffset,
+    SmallDateTime,
+    Char(Option<u32>),
+    NChar(Option<u32>),
+    VarChar(Option<MsSqlTypeParameter>),
+    NVarChar(Option<MsSqlTypeParameter>),
+    Text,
+    NText,
+    Binary(Option<u32>),
+    VarBinary(Option<MsSqlTypeParameter>),
+    Image,
+    Xml,
+    UniqueIdentifier,
+}
+```
+
+### CockroachDB Connector
+
+**Provider:** `cockroachdb`
+
+**Features:**
+- Extends PostgreSQL connector
+- Distributed SQL capabilities
+- Some PostgreSQL features unsupported
+
+```rust
+pub enum CockroachType {
+    // Similar to PostgresType with limitations
+    Bit(Option<u32>),
+    Char(Option<u32>),
+    // ... etc
+}
+```
+
+### MongoDB Connector
+
+**Provider:** `mongodb`
+
+**Status:** Limited Query Compiler support
+
+**Capabilities:**
+```rust
+pub const CAPABILITIES: ConnectorCapabilities = make_bitflags!(ConnectorCapability::{
+    Enums |
+    Json |
+    CompositeTypes |
+    ScalarLists |
+    JsonLists |
+    RelationFieldsInArbitraryOrder |
+    TwoWayEmbeddedManyToManyRelation |
+    DefaultValueAuto |
+    UndefinedType
+});
+```
+
+<Info>
+  MongoDB support in Query Compiler is incomplete. Prisma 7 will ship without MongoDB initially, with support added when a driver adapter is available.
+</Info>
+
+## Connector Capabilities
+
+Capabilities describe what functionality a connector provides:
+
+### Schema Capabilities
+
+- `Enums` - Native enum support
+- `ScalarLists` - Array/list fields
+- `Json` - Native JSON type
+- `JsonLists` - JSON array support
+- `CompositeTypes` - Embedded/composite types
+- `MultiSchema` - Multiple database schemas
+
+### ID and Key Capabilities
+
+- `AutoIncrement` - Auto-incrementing IDs
+- `AutoIncrementAllowedOnNonId` - Autoincrement on non-ID fields
+- `AutoIncrementMultipleAllowed` - Multiple autoincrement fields
+- `CompoundIds` - Multi-field primary keys
+- `AnyId` - Any unique can serve as ID
+- `NamedPrimaryKeys` - Custom primary key names
+- `NamedForeignKeys` - Custom foreign key names
+
+### Index Capabilities
+
+- `FullTextIndex` - Full-text search indexes
+- `IndexColumnLengthPrefixing` - Index prefix length (MySQL)
+- `PartialIndex` - Partial indexes with WHERE
+- `ClusteringSetting` - Clustered indexes
+
+### Query Capabilities
+
+- `InsensitiveFilters` - Case-insensitive filtering
+- `JsonFiltering` - JSON field filtering
+- `JsonFilteringArrayPath` - Array path in JSON (Postgres)
+- `JsonFilteringJsonPath` - JSON path syntax (MySQL)
+- `NativeFullTextSearch` - Full-text search queries
+- `OrderByNullsFirstLast` - NULL ordering control
+- `LateralJoin` - Lateral joins
+- `DistinctOn` - DISTINCT ON support
+
+### Write Capabilities
+
+- `CreateMany` - Batch inserts
+- `CreateSkipDuplicates` - INSERT ... ON CONFLICT DO NOTHING
+- `CreateManyWriteableAutoIncId` - Specify autoincrement values in batch
+- `WritableAutoincField` - Override autoincrement values
+- `UpdateableId` - Modify primary key values
+- `NativeUpsert` - Native UPSERT support
+- `InsertReturning` - INSERT ... RETURNING
+- `UpdateReturning` - UPDATE ... RETURNING
+- `DeleteReturning` - DELETE ... RETURNING
+
+### Transaction Capabilities
+
+- `SupportsTxIsolationReadUncommitted`
+- `SupportsTxIsolationReadCommitted`
+- `SupportsTxIsolationRepeatableRead`
+- `SupportsTxIsolationSerializable`
+- `SupportsTxIsolationSnapshot`
+
+## Relation Modes
+
+Connectors support different relation modes:
+
+```rust
+pub enum RelationMode {
+    ForeignKeys,  // Database foreign keys
+    Prisma,       // Emulated in Prisma Client
+}
+```
+
+### Foreign Keys Mode
+
+Relations enforced by database constraints:
+
+```prisma
+datasource db {
+  provider     = "postgresql"
+  relationMode = "foreignKeys"  // Default for most DBs
+}
+
+model Post {
+  id       Int  @id
+  authorId Int
+  author   User @relation(fields: [authorId], references: [id], onDelete: Cascade)
+}
+```
+
+Referential actions:
+- `Cascade` - Delete/update cascades
+- `Restrict` - Prevent if references exist
+- `NoAction` - Like Restrict, but deferrable
+- `SetNull` - Set to NULL
+- `SetDefault` - Set to default value
+
+### Prisma Mode
+
+Relations emulated by Prisma Client:
+
+```prisma
+datasource db {
+  provider     = "mysql"
+  relationMode = "prisma"  // For PlanetScale, Neon, etc.
+}
+
+model Post {
+  id       Int  @id
+  authorId Int
+  author   User @relation(fields: [authorId], references: [id])
+  
+  @@index([authorId])  // Manual index required
+}
+```
+
+<Note>
+  Prisma mode requires manual indexes on relation fields. The database won't enforce referential integrity.
+</Note>
+
+## Native Type Validation
+
+Connectors validate native type usage:
+
+```rust
+fn validate_native_type_arguments(
+    &self,
+    native_type: &NativeTypeInstance,
+    scalar_type: Option<ScalarType>,
+    span: Span,
+    diagnostics: &mut Diagnostics,
+) {
+    // Check if native type is compatible with scalar type
+    // Validate native type arguments (e.g., length, precision)
+}
+```
+
+Example:
+
+```prisma
+model User {
+  id   Int    @id
+  name String @db.VarChar(255)  // PostgreSQL native type
+  age  Int    @db.SmallInt       // Valid mapping
+  bio  String @db.Integer        // ERROR: String can't use Integer
+}
+```
+
+## Connector-Specific Validations
+
+### Model Validation
+
+```rust
+fn validate_model(
+    &self,
+    model: ModelWalker<'_>,
+    relation_mode: RelationMode,
+    diagnostics: &mut Diagnostics,
+) {
+    // Check model-level constraints
+    // Validate indexes
+    // Check capabilities
+}
+```
+
+Example validations:
+- Composite types only on MongoDB
+- Enum arrays only on supported databases
+- Multi-schema requirements
+
+### Enum Validation
+
+```rust
+fn validate_enum(
+    &self,
+    enum_: EnumWalker<'_>,
+    diagnostics: &mut Diagnostics,
+) {
+    // Check if enums are supported
+    // Validate enum values
+}
+```
+
+### Datasource Validation
+
+```rust
+fn validate_datasource(
+    &self,
+    preview_features: BitFlags<PreviewFeature>,
+    datasource: &Datasource,
+    diagnostics: &mut Diagnostics,
+) {
+    // Validate preview features compatibility
+    // Check datasource properties
+}
+```
+
+## Flavour System
+
+Flavours group similar databases:
+
+```rust
+pub enum Flavour {
+    Postgres,    // PostgreSQL, Neon
+    Mysql,       // MySQL, PlanetScale
+    Sqlite,      // SQLite
+    Mssql,       // SQL Server
+    Mongo,       // MongoDB
+    Cockroach,   // CockroachDB (PostgreSQL-like)
+}
+```
+
+Flavours determine:
+- Query syntax variations
+- Type system similarities
+- Shared capabilities
+
+## Custom Connectors
+
+You can implement custom connectors for new databases:
+
+```rust
+use psl_core::datamodel_connector::*;
+
+pub struct MyCustomConnector;
+
+impl Connector for MyCustomConnector {
+    fn provider_name(&self) -> &'static str {
+        "mycustomdb"
+    }
+    
+    fn flavour(&self) -> Flavour {
+        Flavour::Postgres  // Or your own
+    }
+    
+    fn capabilities(&self) -> ConnectorCapabilities {
+        make_bitflags!(ConnectorCapability::{
+            Enums | Json | AutoIncrement | CompoundIds
+        })
+    }
+    
+    // Implement remaining trait methods...
+}
+```
+
+## Constraint Scopes
+
+Define where constraint names must be unique:
+
+```rust
+pub enum ConstraintScope {
+    GlobalPrimaryKeyKeyIndex,
+    ModelPrimaryKeyKeyIndexForeignKey,
+    GlobalForeignKey,
+    ModelKeyIndex,
+}
+
+fn constraint_violation_scopes(&self) -> &'static [ConstraintScope] {
+    &[
+        ConstraintScope::GlobalPrimaryKeyKeyIndex,
+        ConstraintScope::ModelPrimaryKeyKeyIndexForeignKey,
+    ]
+}
+```
+
+## String Filters
+
+Connectors can customize available string operations:
+
+```rust
+pub enum StringFilter {
+    StartsWith,
+    EndsWith,
+    Contains,
+    Mode,       // Case sensitivity
+    Search,     // Full-text search
+}
+
+fn string_filters(&self, input_object_name: &str) -> BitFlags<StringFilter> {
+    match input_object_name {
+        "String" => BitFlags::all(),
+        _ => BitFlags::empty(),
+    }
+}
+```
+
+## Testing Connectors
+
+Test connector-specific behavior:
+
+```bash
+# Test with specific database features
+cargo test -p psl -F postgresql
+cargo test -p psl -F mysql
+cargo test -p psl -F all
+
+# Run against actual databases
+TEST_DATABASE_URL=postgresql://... cargo test -p sql-migration-tests
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="PSL Overview" icon="book" href="/psl/overview">
+    Return to PSL architecture overview
+  </Card>
+  <Card title="Validation" icon="check" href="/psl/validation">
+    Learn about the validation pipeline
+  </Card>
+</CardGroup>

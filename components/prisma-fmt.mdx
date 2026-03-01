@@ -1,0 +1,622 @@
+---
+title: Prisma Format (prisma-fmt)
+description: Overview of the Prisma schema formatter and Language Server Protocol implementation
+---
+
+## Overview
+
+Prisma Format (`prisma-fmt`) is a multi-purpose tool that provides:
+
+1. **Schema formatting**: Consistent, automatic formatting for Prisma schema files
+2. **Language Server Protocol (LSP)**: Powers IDE features like autocomplete, hover, diagnostics, and more
+3. **Schema linting**: Warnings and suggestions for schema improvements
+4. **Code actions**: Quick fixes and refactoring suggestions
+
+<Note>
+prisma-fmt is the bridge between your editor and the Prisma Schema Language. It's what makes the Prisma VS Code extension and other editor integrations possible.
+</Note>
+
+## Architecture
+
+Prisma Format is built on top of the PSL (Prisma Schema Language) parser and provides LSP-compliant features:
+
+<CardGroup cols={2}>
+  <Card title="Formatting" icon="code">
+    Consistent schema formatting with configurable indentation
+  </Card>
+  <Card title="LSP Features" icon="language">
+    Autocomplete, hover info, diagnostics, references, and code actions
+  </Card>
+  <Card title="Validation" icon="shield-check">
+    Real-time schema validation and error reporting
+  </Card>
+  <Card title="Quick Fixes" icon="wand-magic-sparkles">
+    Automated solutions for common schema issues
+  </Card>
+</CardGroup>
+
+## Core Modules
+
+The crate is organized into focused modules:
+
+```rust
+mod actions;                    // Referential actions
+mod code_actions;               // LSP code actions (quick fixes)
+mod format;                     // Schema formatting
+mod get_config;                 // Configuration extraction
+mod get_datamodel;             // Datamodel extraction
+mod get_dmmf;                  // DMMF generation
+mod hover;                     // Hover information
+mod lint;                      // Schema linting
+mod merge_schemas;             // Multi-file schema merging
+mod native;                    // Native types information
+mod preview;                   // Preview features
+mod references;                // Find references
+mod text_document_completion;  // Autocomplete
+mod validate;                  // Schema validation
+```
+
+## API Functions
+
+### Schema Formatting
+
+Format Prisma schemas with consistent style:
+
+```rust
+pub fn format(datamodel: String, params: &str) -> String
+```
+
+**Input:**
+- `datamodel`: JSON-serialized `SchemaFileInput` (single or multiple files)
+- `params`: JSON-serialized `DocumentFormattingParams` (LSP standard)
+
+**Example:**
+
+```json
+{
+  "textDocument": { "uri": "file:///path/to/schema.prisma" },
+  "options": { "tabSize": 2, "insertSpaces": true }
+}
+```
+
+**Output:** Formatted schema string
+
+<Tip>
+The formatter preserves comments and uses the configured tab size (typically 2 spaces for Prisma schemas).
+</Tip>
+
+### Text Document Completion
+
+Provides autocomplete suggestions:
+
+```rust
+pub fn text_document_completion(schema_files: String, params: &str) -> String
+```
+
+**Completions provided for:**
+- Model names
+- Field types
+- Attribute names (`@id`, `@unique`, `@default`, etc.)
+- Attribute arguments
+- Datasource providers
+- Generator providers
+- Relation field names
+- Enum values
+
+**Example completion scenarios:**
+
+```prisma
+model User {
+  id Int @|  // Suggests: id, unique, default, map, etc.
+}
+
+datasource db {
+  provider = "|"  // Suggests: postgresql, mysql, sqlite, sqlserver, mongodb
+}
+
+model Post {
+  author |  // Suggests: User (from available models)
+}
+```
+
+### Hover Information
+
+Provides contextual information on hover:
+
+```rust
+pub fn hover(schema_files: String, params: &str) -> String
+```
+
+**Hover info includes:**
+- Field type documentation
+- Attribute descriptions
+- Model relationship information
+- Native type mappings
+- Validation constraints
+
+### Code Actions
+
+Suggests quick fixes and refactorings:
+
+```rust
+pub fn code_actions(schema_files: String, params: &str) -> String
+```
+
+**Available code actions:**
+
+<CardGroup cols={2}>
+  <Card title="Block Actions" icon="cube">
+    Add missing opposite relation fields, add @@map for naming conventions
+  </Card>
+  <Card title="Field Actions" icon="input-text">
+    Add missing relation arguments, fix relation field types
+  </Card>
+  <Card title="MongoDB Actions" icon="database">
+    Add @db.ObjectId for MongoDB IDs, fix composite type usage
+  </Card>
+  <Card title="Multi-Schema Actions" icon="layer-group">
+    Add schema references for multi-schema setups
+  </Card>
+  <Card title="Relation Mode Actions" icon="link">
+    Add relation mode configuration, add missing indexes
+  </Card>
+  <Card title="Relation Actions" icon="arrow-right-arrow-left">
+    Fix broken relations, add relation names, add referential actions
+  </Card>
+</CardGroup>
+
+### Find References
+
+Finds all references to a symbol:
+
+```rust
+pub fn references(schema_files: String, params: &str) -> String
+```
+
+**Can find references for:**
+- Model names (used in relations, @@map, etc.)
+- Enum names (used in field types)
+- Field names (used in relations, indexes)
+- Composite type names (MongoDB)
+
+### Schema Validation
+
+Validates schema and returns errors:
+
+```rust
+pub fn validate(validate_params: String) -> Result<(), String>
+```
+
+**Validation includes:**
+- Syntax errors
+- Type errors
+- Relation errors
+- Constraint violations
+- Attribute validation
+- Database-specific validations
+
+**Error format:**
+
+```
+The `referentialIntegrity` and `relationMode` attributes cannot be 
+used together. Please use only `relationMode` instead.
+  -->  schema.prisma:5
+   |
+ 4 |   relationMode         = "prisma"
+ 5 |   referentialIntegrity = "foreignKeys"
+ 6 | }
+   |
+
+Validation Error Count: 1
+```
+
+### Configuration Extraction
+
+Extracts datasource and generator configuration:
+
+```rust
+pub fn get_config(get_config_params: String) -> String
+```
+
+**Input params:**
+
+```typescript
+interface GetConfigParams {
+  prismaSchema: string;
+  ignoreEnvVarErrors?: boolean;
+  env?: { [key: string]: string };
+  datasourceOverrides?: { [key: string]: string };
+}
+```
+
+**Output:** JSON with datasources and generators
+
+### DMMF Generation
+
+Generates Data Model Meta Format:
+
+```rust
+pub fn get_dmmf(get_dmmf_params: String) -> Result<String, String>
+```
+
+**DMMF includes:**
+- All models and their fields
+- All enums and their values
+- Relations and their properties
+- Unique constraints and indexes
+- Used for Prisma Client generation
+
+### Schema Merging
+
+Merges multiple schema files:
+
+```rust
+pub fn merge_schemas(params: String) -> Result<String, String>
+```
+
+Useful for:
+- Multi-file schema support
+- Client generation from split schemas
+- Schema composition
+
+### Linting
+
+Provides schema quality warnings:
+
+```rust
+pub fn lint(schema: String) -> String
+```
+
+**Lint warnings include:**
+- Naming convention violations
+- Missing indexes on foreign keys
+- Inefficient relation patterns
+- Deprecated syntax usage
+
+## LSP Context
+
+Internal LSP operations use a shared context:
+
+```rust
+pub(crate) struct LSPContext<'a, T> {
+    pub(crate) db: &'a ParserDatabase,
+    pub(crate) config: &'a Configuration,
+    pub(crate) initiating_file_id: FileId,
+    pub(crate) params: &'a T,
+}
+
+impl<'a, T> LSPContext<'a, T> {
+    pub(crate) fn datasource(&self) -> Option<&Datasource>;
+    pub(crate) fn connector(&self) -> &'static dyn Connector;
+    pub(crate) fn generator(&self) -> Option<&'a Generator>;
+}
+```
+
+This context provides access to:
+- Parsed schema database
+- Configuration (datasources, generators)
+- Active file being edited
+- Database connector information
+
+## Code Actions in Detail
+
+### Block-Level Actions
+
+**Add missing opposite relation field:**
+
+```prisma
+// Before
+model User {
+  id    Int    @id
+  posts Post[]
+}
+
+model Post {
+  id Int @id
+  // Missing: author User @relation(fields: [authorId], references: [id])
+  // Missing: authorId Int
+}
+
+// After applying code action
+model Post {
+  id       Int  @id
+  author   User @relation(fields: [authorId], references: [id])
+  authorId Int
+}
+```
+
+### Field-Level Actions
+
+**Fix relation field types:**
+
+```prisma
+// Before (error: wrong type)
+model Post {
+  author String @relation(fields: [authorId], references: [id])
+  authorId Int
+}
+
+// After code action
+model Post {
+  author User @relation(fields: [authorId], references: [id])
+  authorId Int
+}
+```
+
+### MongoDB-Specific Actions
+
+**Add @db.ObjectId for MongoDB:**
+
+```prisma
+// Before
+model User {
+  id String @id @default(auto()) @map("_id")
+}
+
+// After code action
+model User {
+  id String @id @default(auto()) @map("_id") @db.ObjectId
+}
+```
+
+### Relation Mode Actions
+
+**Add missing indexes for Prisma relation mode:**
+
+```prisma
+datasource db {
+  provider     = "mysql"
+  url          = env("DATABASE_URL")
+  relationMode = "prisma"
+}
+
+model Post {
+  author   User @relation(fields: [authorId], references: [id])
+  authorId Int  // Code action: add @@index([authorId])
+}
+
+// After applying action
+model Post {
+  author   User @relation(fields: [authorId], references: [id])
+  authorId Int
+  
+  @@index([authorId])
+}
+```
+
+## Integration with Editors
+
+### VS Code
+
+The [Prisma VS Code extension](https://marketplace.visualstudio.com/items?itemName=Prisma.prisma) uses prisma-fmt:
+
+- Runs as a language server process
+- Provides real-time diagnostics
+- Offers autocomplete and hover info
+- Enables code actions (quick fixes)
+- Handles formatting on save
+
+### Other Editors
+
+Any editor with LSP support can use prisma-fmt:
+
+- **Neovim**: Via `nvim-lspconfig`
+- **Emacs**: Via `lsp-mode`
+- **Sublime Text**: Via `LSP` package
+- **IntelliJ IDEA**: Via Prisma plugin
+
+**LSP server command:**
+
+```bash
+prisma-fmt lsp
+```
+
+## Testing
+
+prisma-fmt uses snapshot testing extensively:
+
+```bash
+# Run all tests
+cargo test -p prisma-fmt -F psl/all
+
+# Update snapshots
+UPDATE_EXPECT=1 cargo test -p prisma-fmt -F psl/all
+
+# Run specific test
+cargo test -p prisma-fmt validate::tests::validate_direct_url
+```
+
+### Test Structure
+
+Tests use `expect!` macros for snapshot testing:
+
+```rust
+#[test]
+fn test_completion() {
+    let schema = r#"
+        model User {
+            id Int @
+        }
+    "#;
+    
+    let completions = get_completions(schema, position);
+    
+    expect![[r#"
+        [
+            {"label": "id"},
+            {"label": "unique"},
+            {"label": "default"},
+        ]
+    "#]].assert_eq(&completions);
+}
+```
+
+<Tip>
+When changing diagnostics or completions, always run with `UPDATE_EXPECT=1` to regenerate snapshots, then review the diffs carefully.
+</Tip>
+
+## Preview Features
+
+Get available preview features:
+
+```rust
+pub fn preview_features() -> String
+```
+
+Returns JSON with all preview features and their status (active, deprecated, etc.).
+
+## Native Types
+
+Get native type information:
+
+```rust
+pub fn native_types(input: String) -> String
+```
+
+Returns available native types for the specified connector:
+
+```json
+{
+  "postgresql": [
+    {"name": "SmallInt", "args": []},
+    {"name": "Integer", "args": []},
+    {"name": "BigInt", "args": []},
+    {"name": "Decimal", "args": ["precision", "scale"]},
+    {"name": "VarChar", "args": ["length"]},
+    // ... more types
+  ]
+}
+```
+
+## Referential Actions
+
+Get available referential actions:
+
+```rust
+pub fn referential_actions(schema: String) -> String
+```
+
+Returns referential actions supported by the datasource:
+
+```json
+{
+  "onDelete": ["Cascade", "Restrict", "NoAction", "SetNull", "SetDefault"],
+  "onUpdate": ["Cascade", "Restrict", "NoAction", "SetNull", "SetDefault"]
+}
+```
+
+## Binary Distribution
+
+prisma-fmt is distributed as:
+
+1. **Native binary**: For CLI usage and local LSP servers
+2. **WASM module**: For browser-based tools and web editors
+
+### Building
+
+```bash
+# Native binary
+cargo build -p prisma-fmt --release
+
+# With specific features
+cargo build -p prisma-fmt -F psl/all --release
+```
+
+### WASM Build
+
+See `prisma-schema-wasm` crate for browser-compatible builds.
+
+## Common Issues
+
+### CRLF Line Endings
+
+<Warning>
+Some test fixtures expect CRLF line endings (Windows-style). Don't convert these to LF or tests will fail.
+</Warning>
+
+**Example test:**
+```rust
+#[test]
+fn create_missing_block_composite_type_crlf() {
+    // This test specifically checks CRLF handling
+}
+```
+
+### Snapshot Updates
+
+After changing diagnostics:
+
+1. Run tests with `UPDATE_EXPECT=1`
+2. Review git diff carefully
+3. Ensure changes are intentional
+4. Commit updated snapshots
+
+### Feature Flags
+
+Some tests require specific feature flags:
+
+```bash
+# All PSL features
+cargo test -p prisma-fmt -F psl/all
+
+# Without features (may fail)
+cargo test -p prisma-fmt  # ❌ May not compile
+```
+
+## Performance
+
+The LSP implementation is designed for real-time performance:
+
+- **Incremental parsing**: Only re-parse changed portions
+- **Caching**: Parser database cached between requests
+- **Async operations**: Non-blocking LSP server
+- **Efficient completion**: O(1) lookup for most completions
+
+## Example Usage
+
+### Formatting via CLI
+
+```bash
+echo '{"tabSize": 2}' > format-params.json
+prisma-fmt format < schema.prisma > formatted.prisma
+```
+
+### Running as LSP Server
+
+```bash
+prisma-fmt lsp
+```
+
+The server communicates via stdin/stdout using JSON-RPC 2.0.
+
+### Validation
+
+```rust
+use serde_json::json;
+
+let params = json!({
+    "prismaSchema": schema_string,
+});
+
+let result = prisma_fmt::validate(params.to_string());
+
+if let Err(errors) = result {
+    eprintln!("Validation errors:\n{}", errors);
+}
+```
+
+## Related Components
+
+- [Prisma Schema Language](/components/psl) - The underlying parser and validator
+- [Schema Engine](/components/schema-engine) - Uses prisma-fmt for schema validation
+- [Query Compiler](/components/query-compiler) - Uses PSL for data model understanding
+
+## Source Code
+
+Explore the prisma-fmt source code:
+
+- **Main crate**: `prisma-fmt/`
+- **LSP implementation**: `prisma-fmt/src/`
+- **Code actions**: `prisma-fmt/src/code_actions/`
+- **Completions**: `prisma-fmt/src/text_document_completion.rs`
+- **Repository**: [prisma/prisma-engines](https://github.com/prisma/prisma-engines)

@@ -1,0 +1,468 @@
+---
+title: "Contributing to Prisma Engines"
+description: "Guidelines and best practices for contributing to Prisma Engines"
+---
+
+## Welcome Contributors
+
+Contributions include code, documentation, answering user questions, running the project's infrastructure, and advocating for all types of users.
+
+The project welcomes all contributions from anyone willing to work in good faith with other contributors and the community. **No contribution is too small and all contributions are valued.**
+
+## Before You Start
+
+### External Contributions
+
+Most development of Prisma Engines is done by employees of Prisma. We welcome external contributions, but need to balance that with the direction set in our company roadmap.
+
+<Warning>
+  **Before attempting to implement any large feature**, we recommend chatting with us first through Slack or opening an issue to discuss the approach.
+</Warning>
+
+This helps ensure:
+- Your work aligns with project direction
+- You don't duplicate existing efforts
+- The implementation approach is acceptable
+- Your time is well spent
+
+### Good First Contributions
+
+The README identifies some areas that need documentation:
+
+- How to run `quaint` tests
+- How to run schema engine tests
+
+These can be excellent first contributions to get familiar with the codebase.
+
+## Code of Conduct
+
+The project has a [Code of Conduct](https://github.com/prisma/prisma-engines/blob/main/CODE_OF_CONDUCT.md) that **all** contributors are expected to follow.
+
+This code describes the **minimum** behavior expectations for all contributors. It is designed to help establish a culture where anyone and everyone who wants to contribute feels safe doing so.
+
+### Key Principles
+
+- **Good faith collaboration** - Trust that disagreements come from different perspectives, not bad intentions
+- **Respectful interaction** - How you act reflects on both you and the project
+- **Open and inclusive** - The community thrives on diversity and welcomes all contributors
+- **Self-regulation** - Be quick to apologize and correct course, even if you're not entirely convinced you need to
+
+### Bad Actors
+
+A **bad actor** is someone who repeatedly violates the **spirit** of the Code of Conduct through consistent failure to self-regulate the way they interact with other contributors.
+
+Bad actors:
+- Alienate other contributors
+- Discourage collaboration
+- Reflect poorly on the project as a whole
+
+Being a bad actor may be intentional or unintentional. Unintentional bad behavior can be easily corrected by:
+- Being quick to apologize
+- Correcting course even if unsure it's necessary
+- Giving other contributors the benefit of the doubt
+- Having a sincere willingness to admit you might be wrong
+
+**Don't be a bad actor.**
+
+## Development Workflow
+
+### 1. Set Up Your Environment
+
+<Steps>
+  <Step title="Fork and Clone">
+    ```bash
+    git clone https://github.com/YOUR_USERNAME/prisma-engines.git
+    cd prisma-engines
+    ```
+  </Step>
+
+  <Step title="Install Dependencies">
+    Follow the [building guide](/development/building) to install:
+    - Rust toolchain
+    - direnv
+    - Docker (for database tests)
+    - Node.js and pnpm (for driver adapters)
+  </Step>
+
+  <Step title="Allow direnv">
+    ```bash
+    direnv allow
+    ```
+  </Step>
+
+  <Step title="Verify Build">
+    ```bash
+    cargo build
+    ```
+  </Step>
+</Steps>
+
+### 2. Create a Branch
+
+Use descriptive branch names:
+
+```bash
+git checkout -b fix/schema-validation-error
+git checkout -b feat/add-query-optimization
+git checkout -b docs/improve-testing-guide
+```
+
+### 3. Make Your Changes
+
+#### Code Changes
+
+- Follow existing code style and conventions
+- Add tests for new functionality
+- Update relevant documentation
+- Keep changes focused and atomic
+
+#### Documentation Changes
+
+- Use clear, concise language
+- Include code examples where helpful
+- Test that code examples actually work
+- Update navigation if adding new pages
+
+### 4. Test Your Changes
+
+<CodeGroup>
+```bash Run Unit Tests
+make test-unit
+```
+
+```bash Run Specific Tests
+cargo test -p prisma-fmt
+cargo test -p query-compiler
+```
+
+```bash Run Integration Tests
+make dev-pg-qc
+cargo test -p query-engine-tests
+```
+
+```bash Run Linting
+make pedantic
+```
+</CodeGroup>
+
+See the [testing guide](/development/testing) for more details.
+
+### 5. Update Snapshots (if needed)
+
+If you changed diagnostics or output format:
+
+```bash
+UPDATE_EXPECT=1 cargo test -p prisma-fmt
+UPDATE_EXPECT=1 cargo test -p query-compiler
+```
+
+**Review snapshot diffs carefully** before committing to ensure changes are intentional.
+
+### 6. Format and Lint
+
+```bash
+# Format code
+cargo fmt
+
+# Run clippy
+cargo clippy --all-features --all-targets -- -Dwarnings
+
+# Or run both with pedantic check
+make pedantic
+```
+
+### 7. Commit Your Changes
+
+Write clear, descriptive commit messages:
+
+```bash
+git add .
+git commit -m "fix(schema-engine): handle null values in introspection
+
+Previously, null values in certain MySQL column types would cause
+introspection to fail. This adds proper null handling and test coverage.
+
+Fixes #1234"
+```
+
+**Good commit messages:**
+- Start with a type: `fix`, `feat`, `docs`, `test`, `refactor`, `perf`, `chore`
+- Include component in parentheses: `(schema-engine)`, `(query-compiler)`, `(psl)`
+- Provide context in the body
+- Reference related issues
+
+### 8. Push and Create PR
+
+```bash
+git push -u origin your-branch-name
+```
+
+Then create a Pull Request on GitHub.
+
+## Pull Request Guidelines
+
+### PR Title
+
+Follow the same format as commit messages:
+
+```
+feat(query-compiler): add support for JSON filtering
+fix(schema-engine): resolve migration shadow database issue
+docs: improve connector test kit documentation
+```
+
+### PR Description
+
+Include:
+
+1. **What** - What does this PR do?
+2. **Why** - Why is this change needed?
+3. **How** - How does it work? (for complex changes)
+4. **Testing** - How was it tested?
+5. **Breaking Changes** - Any breaking changes?
+6. **Related Issues** - Links to issues
+
+**Example:**
+
+```markdown
+## What
+Adds support for filtering JSON fields in PostgreSQL queries.
+
+## Why
+Users need to filter on JSON field values without using raw SQL.
+Fixes #4567
+
+## How
+Implements JSON path syntax in the query compiler and translates
+to PostgreSQL's `->` and `->>` operators.
+
+## Testing
+- Added unit tests in query-compiler
+- Added integration tests in connector-test-kit
+- Verified with PostgreSQL 13, 14, 15
+
+## Breaking Changes
+None
+```
+
+### Linking prisma/prisma Branch
+
+If your changes require coordinated changes in both `prisma/prisma-engines` and `prisma/prisma`:
+
+1. Create a branch in `prisma/prisma` with your adapter/client changes
+2. Add this tag to your PR description on a separate line:
+
+```
+/prisma-branch your/branch-name
+```
+
+GitHub Actions will use that branch when building driver adapters for CI.
+
+**When merging:**
+1. Merge the `prisma/prisma` PR first
+2. Then merge the `prisma/prisma-engines` PR
+
+## Integration Testing
+
+### Automated Integration Releases
+
+Trigger automatic integration releases for testing in the full Prisma stack:
+
+**Option 1:** Branch naming
+```bash
+git checkout -b integration/my-feature
+```
+
+Any branch starting with `integration/` will:
+1. Run full test suite
+2. Build and release engines to S3/R2
+3. Trigger engines-wrapper update
+4. Create automated PR in prisma/prisma
+5. Publish to npm on `integration` tag
+6. Run ecosystem tests
+
+**Option 2:** Commit message
+```bash
+git commit -m "feat: my feature [integration]"
+```
+
+Including `[integration]` in any commit message triggers the same flow.
+
+**Option 3:** Manual workflow
+
+Run the [build-engines workflow](https://github.com/prisma/prisma-engines/actions/workflows/build-engines.yml) manually on your branch.
+
+<Warning>
+  Test and publish workflows run in parallel. Keep an eye on both to catch defects before they propagate.
+</Warning>
+
+### Testing from Forks
+
+To trigger integration releases from a fork:
+
+```bash
+# Checkout the fork's PR
+gh pr checkout 4375
+
+# Create integration branch
+git checkout -b integration/sql-nested-transactions
+
+# Push to main repository
+git push --set-upstream origin integration/sql-nested-transactions
+```
+
+To update after changes:
+
+```bash
+git branch --delete integration/sql-nested-transactions
+gh pr checkout 4375
+git checkout -b integration/sql-nested-transactions
+git push --set-upstream origin integration/sql-nested-transactions --force
+```
+
+## Code Review Process
+
+### What to Expect
+
+- Reviews may take time - be patient
+- Reviewers may request changes
+- Be responsive to feedback
+- Discussions are about code, not you personally
+
+### Responding to Feedback
+
+- Address all comments
+- Ask questions if unclear
+- Explain your reasoning when disagreeing
+- Update code based on accepted feedback
+- Mark conversations as resolved after addressing
+
+### Review Iterations
+
+```bash
+# Make requested changes
+git add .
+git commit -m "address review feedback"
+git push
+```
+
+## Coding Standards
+
+### Rust Style
+
+- Follow standard Rust conventions
+- Use `cargo fmt` for formatting
+- Address all `cargo clippy` warnings
+- Write idiomatic Rust
+- Prefer explicit over implicit
+
+### Testing Requirements
+
+- Add tests for new features
+- Maintain or improve test coverage
+- Integration tests for user-facing changes
+- Update snapshots when changing output
+
+### Documentation
+
+- Document public APIs
+- Add inline comments for complex logic
+- Update README when adding features
+- Include examples in documentation
+
+### Error Handling
+
+- Use proper error types
+- Provide helpful error messages
+- Include context in errors
+- Don't panic in library code
+
+## Common Pitfalls
+
+### CRLF vs LF Line Endings
+
+Some test fixtures require CRLF endings. Don't change line endings unless intentional.
+
+```bash
+# If Git warns about line endings
+git checkout HEAD -- path/to/file
+```
+
+### Snapshot Updates
+
+<Warning>
+  Never update all snapshots blindly. Always review what changed and why.
+</Warning>
+
+```bash
+# Good: Review first
+UPDATE_EXPECT=1 cargo test -p prisma-fmt
+git diff  # Review changes
+
+# Bad: Blind update
+UPDATE_EXPECT=1 cargo test && git add -A && git commit -m "update snapshots"
+```
+
+### Missing Database URLs
+
+Integration tests require database connections:
+
+```bash
+# Set up before running tests
+source .test_database_urls/postgres
+cargo test -p sql-migration-tests
+```
+
+### Feature Flag Confusion
+
+Some crates require specific features:
+
+```bash
+# Wrong - may fail
+cargo test -p psl
+
+# Right - includes all features
+cargo test -p psl --features all
+```
+
+## Getting Help
+
+### Ask Questions
+
+- **GitHub Discussions** - General questions
+- **GitHub Issues** - Bug reports, feature requests
+- **Slack** - Real-time chat (for contributors)
+- **PR Comments** - Questions about your PR
+
+### Resources
+
+- [Building Guide](/development/building)
+- [Testing Guide](/development/testing)
+- [Debugging Guide](/development/debugging)
+- [API Documentation](https://prisma.github.io/prisma-engines/)
+- [Prisma Documentation](https://www.prisma.io/docs)
+
+## Recognition
+
+All contributors are valued and recognized:
+
+- Contributors listed in release notes
+- Credit in commit history
+- Community appreciation
+- Building better tools for everyone
+
+## Security
+
+If you discover a security issue:
+
+**Do not open a public issue.**
+
+Instead, email: [security@prisma.io](mailto:security@prisma.io?subject=[GitHub]%20Prisma%202%20Security%20Report%20Engines)
+
+## License
+
+By contributing, you agree that your contributions will be licensed under the project's license (Apache 2.0).
+
+---
+
+Thank you for contributing to Prisma Engines! Your efforts help make database tools better for developers worldwide.
